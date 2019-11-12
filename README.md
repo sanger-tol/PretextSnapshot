@@ -10,12 +10,9 @@ PretextSnapshot --sequenceHelp for how to format the sequence specification stri
 PretextSnapshot -m map.pretext --sequences "=full"  ::  Generates an image of the whole contact map.<br/>
 PretextSnapshot -m map.pretext --sequences "=all"   ::  Generates an image of each sequence in the contact map.<br/>
 PretextSnapshot -m map.pretext --sequences "seq_0"  ::  Generates an image of the sequence named "seq_0".<br/>
-PretextSnapshot -m map.pretext --sequences "seq_0,
-                                            seq_1"  ::  Generates an image of "seq_0" and an image of "seq_1".<br/>
-PretextSnapshot -m map.pretext --sequences "seq_0 > <br/>
-                                            seq_10" ::  Generates an image between "seq_0" and "seq_10".<br/>
-PretextSnapshot -m map.pretext --sequences "{seq_0,<br/>
-                                             seq_1}"::  Generates an image of the inter-sequence region between "seq_0" and "seq_1".<br/>
+PretextSnapshot -m map.pretext --sequences "seq_0, seq_1"  ::  Generates an image of "seq_0" and an image of "seq_1".<br/>
+PretextSnapshot -m map.pretext --sequences "seq_0 > seq_10" ::  Generates an image between "seq_0" and "seq_10".<br/>
+PretextSnapshot -m map.pretext --sequences "{seq_0, seq_1}"::  Generates an image of the inter-sequence region between "seq_0" and "seq_1".<br/>
 
 # Requirments, running
 4 cpu cores <br/>
