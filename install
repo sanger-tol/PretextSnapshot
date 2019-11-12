@@ -1,0 +1,159 @@
+#!/usr/bin/env python
+
+from subprocess import Popen, PIPE
+import argparse, os, os.path, shutil
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument("-c", "--compiler", type=str,
+                    help="compiler to use (one will be chosen if not specified)")
+parser.add_argument("-f", "--flags", type=str,
+                    help="compiler flags (override defaults)")
+parser.add_argument("-d", "--libdeflate", type=str,
+                    help="path to libdeflate static library (will be downloaded and built if not specified)")
+parser.add_argument("-m", "--libmpc", type=str,
+                    help="path to libmpc static library (will be downloaded and built if not specified)")
+parser.add_argument("--noavx", action="store_true",
+                    help="disable avx instructions")
+
+args = parser.parse_args()
+
+
+compilers = ['clang', 'gcc']
+flags = {"clang": "-Ofast -pthreads", "gcc": "-O3 -pthread"}
+def getFlags(compiler):
+    for c in flags.keys():
+        if c in compiler.split("/")[-1]:
+            return flags[c]
+    raise SystemExit("Unknown compiler " + compiler)
+
+if args.compiler is None:
+    
+    for compiler in compilers:
+        
+        p = Popen(['which', compiler], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        output, err = p.communicate()
+        
+        if p.returncode == 0:
+            args.compiler = compiler
+            print("Using " + compiler)
+            break
+else:
+    p = Popen(['which', args.compiler], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    output, err = p.communicate()
+    if p.returncode != 0:
+        raise SystemExit("Could not find '" + args.compiler + "' on your PATH")
+
+
+if args.compiler is None:
+    raise SystemExit("Could not find an installed compiler on your PATH")
+
+
+if args.flags is None:
+    args.flags = getFlags(args.compiler)
+    args.flags += " -std=c++11 -march=x86-64 -mtune=generic"
+
+if args.noavx:
+    args.flags += " -msse4.1"
+else:
+    args.flags += " -mavx"
+
+if args.libdeflate is None:
+    print("Downloading and building libdeflate")
+    
+    p = Popen(['which', 'git'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    output, err = p.communicate()
+    if p.returncode != 0:
+        raise SystemExit("Could not find 'git' on your PATH, cannot install libdeflate")
+
+    p = Popen(['git', 'clone', 'https://github.com/ebiggers/libdeflate'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    output, err = p.communicate()
+    if p.returncode != 0:
+        raise SystemExit("Error cloning libdeflate: " + err.decode('utf-8'))
+
+    if not os.path.exists("libdeflate"):
+        raise SystemExit("Error, libdeflate directory does not exist")
+
+    os.chdir("libdeflate")
+
+    env = os.environ.copy()
+    env['CC'] = args.compiler
+    env['CFLAGS'] = flags = getFlags(args.compiler)
+    env['DISABLE_GZIP'] = '1'
+    p = Popen(['make', 'libdeflate.a'], stdin=PIPE, stdout=PIPE, stderr=PIPE, env=env)
+    output, err = p.communicate()
+    if p.returncode != 0:
+        raise SystemExit("Error making libdeflate.a: " + err.decode('utf-8'))
+
+    if not os.path.exists("libdeflate.a"):
+        raise SystemExit("Error, could not find libdeflate.a")
+
+    os.rename("libdeflate.a", "../libdeflate.a")
+    os.chdir("..")
+    try:
+        shutil.rmtree("libdeflate")
+    except OSError as e:
+        raise SystemExit("Error: %s - %s.".format(e.filename, e.strerror))
+
+    args.libdeflate = "libdeflate.a"
+
+if args.libmpc is None:
+    print("Downloading and building libmpc")
+    
+    p = Popen(['which', 'git'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    output, err = p.communicate()
+    if p.returncode != 0:
+        raise SystemExit("Could not find 'git' on your PATH, cannot install libmpc")
+
+    p = Popen(['git', 'clone', 'https://github.com/orangeduck/mpc'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    output, err = p.communicate()
+    if p.returncode != 0:
+        raise SystemExit("Error cloning mpc: " + err.decode('utf-8'))
+
+    if not os.path.exists("mpc"):
+        raise SystemExit("Error, mpc directory does not exist")
+
+    os.chdir("mpc")
+
+    command = args.compiler + " -c mpc.c " + args.flags.replace("-std=c++11", "") + " -o mpc.o"
+    p = Popen(command.strip().split(), stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    output, err = p.communicate()
+    if p.returncode != 0:
+        raise SystemExit("Error making mpc.o: " + err.decode('utf-8'))
+    
+    command = "ar rcs libmpc.a mpc.o"
+    p = Popen(command.strip().split(), stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    output, err = p.communicate()
+    if p.returncode != 0:
+        raise SystemExit("Error making libmpc.a: " + err.decode('utf-8'))
+ 
+    if not os.path.exists("libmpc.a"):
+        raise SystemExit("Error, could not find libmpc.a")
+
+    os.rename("libmpc.a", "../libmpc.a")
+    os.chdir("..")
+    try:
+        shutil.rmtree("mpc")
+    except OSError as e:
+        raise SystemExit("Error: %s - %s.".format(e.filename, e.strerror))
+
+    args.libmpc = "libmpc.a"
+
+
+print("Building PretextSnapshot")
+
+command = args.compiler + " PretextSnapshot.cpp " + args.libdeflate + " " + args.libmpc + " -Iinclude -lstdc++ -lm " + args.flags + " -o PretextSnapshot"
+p = Popen(command.strip().split(), stdin=PIPE, stdout=PIPE, stderr=PIPE)
+output, err = p.communicate()
+if p.returncode != 0:
+    raise SystemExit("Error making PretextSnapshot: " + err.decode('utf-8'))
+else:
+    print("Done")
+
+
+
+
+
+
+
+
