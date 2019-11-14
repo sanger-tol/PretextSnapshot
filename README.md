@@ -24,9 +24,9 @@ The Mac binary was build on MacOS 10.13.6<br/>
 The Linux binary was build on kernel 3.13<br/>
 The Windows binary was build on Windows 10, and should work on at least Windows 7<br/>
 
-# non-AVX builds
-By default, all prebuild binaries use AVX instructions. Non-AVX versions are also available.<br/>
-For optimal performance, AVX versions are recomended.
+# non-AVX2 builds
+By default, prebuild binaries use AVX2 instructions. Non-AVX2 versions are also available.<br/>
+For optimal performance, AVX2 versions are recomended.
 
 # Third-Party acknowledgements
 PretextSnapshot uses the following third-party libraries:<br/>

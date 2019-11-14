@@ -13,7 +13,7 @@ parser.add_argument("-d", "--libdeflate", type=str,
                     help="path to libdeflate static library (will be downloaded and built if not specified)")
 parser.add_argument("-m", "--libmpc", type=str,
                     help="path to libmpc static library (will be downloaded and built if not specified)")
-parser.add_argument("--noavx", action="store_true",
+parser.add_argument("--noavx2", action="store_true",
                     help="disable avx instructions")
 
 args = parser.parse_args()
@@ -53,10 +53,10 @@ if args.flags is None:
     args.flags = getFlags(args.compiler)
     args.flags += " -std=c++11 -march=x86-64 -mtune=generic"
 
-if args.noavx:
+if args.noavx2:
     args.flags += " -msse4.1"
 else:
-    args.flags += " -mavx"
+    args.flags += " -mavx2"
 
 if args.libdeflate is None:
     print("Downloading and building libdeflate")
