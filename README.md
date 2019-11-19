@@ -19,14 +19,11 @@ PretextSnapshot -m map.pretext --sequences "{seq_0, seq_1}"::  Generates an imag
 (30 * output image size) + 6M RAM, i.e. if your output resolution is set to 1K (1024 pixels) your memory requirments will be (30 * 1K * 1K) + 6M = 36M
 
 # Windows, Mac and Linux builds
-Prebuild binaries for Windows, Mac and Linux are available<br/>
+Prebuilt binaries for Windows, Mac and Linux are available<br/>
 The Mac binary was build on MacOS 10.13.6<br/>
 The Linux binary was build on kernel 3.13<br/>
 The Windows binary was build on Windows 10, and should work on at least Windows 7<br/>
-
-# non-AVX2 builds
-By default, prebuild binaries use AVX2 instructions. Non-AVX2 versions are also available.<br/>
-For optimal performance, AVX2 versions are recomended.
+Prebuilt binaries now come in 4-different varieties: AVX2, AVX, SSE4.2 and SSE4.1 along with a wrapper program. Just keep all the binaries on the same path and run the wrapper (PretextSnapshot); the correct binary for your architecture will be executed.
 
 # Third-Party acknowledgements
 PretextSnapshot uses the following third-party libraries:<br/>
