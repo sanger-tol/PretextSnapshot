@@ -1,6 +1,18 @@
 # PretextSnapshot
 Commandline image generator for Pretext contact maps.
 
+# Bioconda
+All commandline Pretext tools for Unix (Linux and Mac) are available on [bioconda](https://bioconda.github.io/).<br/>
+
+The full suite of Pretext tools can be installed with
+```sh
+> conda install pretext-suite
+```
+Or, just PretextSnapshot can in installed with
+```sh
+> conda install pretextsnapshot
+```
+
 # Usage
 PretextSnapshot -m map.pretext --sequences "sequences to image" [other options] <br/>
 PretextSnapshot --help for a full list of options. <br/>
