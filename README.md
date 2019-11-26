@@ -8,7 +8,7 @@ The full suite of Pretext tools can be installed with
 ```sh
 > conda install pretext-suite
 ```
-Or, just PretextSnapshot can in installed with
+Or, just PretextSnapshot can be installed with
 ```sh
 > conda install pretextsnapshot
 ```
