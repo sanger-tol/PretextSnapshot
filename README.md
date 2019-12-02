@@ -1,3 +1,5 @@
+[![Anaconda-Server Badge](https://anaconda.org/bioconda/pretext-suite/badges/installer/conda.svg)](https://conda.anaconda.org/bioconda)
+[![Anaconda-Server Badge](https://anaconda.org/bioconda/pretextsnapshot/badges/downloads.svg)](https://anaconda.org/bioconda/pretextsnapshot)
 # PretextSnapshot
 Commandline image generator for Pretext contact maps.
 
