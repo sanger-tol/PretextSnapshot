@@ -109,20 +109,20 @@ def pretextsnapshot(bin, dir):
 
 
 def test_pretextsnapshot(tmpdir):
-    pretextsnapshot("PretextSnapshot", tmpdir)
+    pretextsnapshot("./PretextSnapshot", tmpdir)
 
 
 def test_pretextsnapshot_avx2(tmpdir):
-    pretextsnapshot("PretextSnapshot.avx2", tmpdir)
+    pretextsnapshot("./PretextSnapshot.avx2", tmpdir)
 
 
 def test_pretextsnapshot_avx(tmpdir):
-    pretextsnapshot("PretextSnapshot.avx", tmpdir)
+    pretextsnapshot("./PretextSnapshot.avx", tmpdir)
 
 
 def test_pretextsnapshot_sse42(tmpdir):
-    pretextsnapshot("PretextSnapshot.sse42", tmpdir)
+    pretextsnapshot("./PretextSnapshot.sse42", tmpdir)
 
 
 def test_pretextsnapshot_sse41(tmpdir):
-    pretextsnapshot("PretextSnapshot.sse41", tmpdir)
+    pretextsnapshot("./PretextSnapshot.sse41", tmpdir)
