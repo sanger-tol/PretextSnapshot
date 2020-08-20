@@ -606,7 +606,7 @@ ResizeImage(u08 *source, u32 sourceWidth, u32 sourceHeight, u08 *destination, u3
 #pragma clang diagnostic pop
 
 global_variable
-memory_arena *
+memory_arena
 STB_Memory_Arena;
 
 global_variable
@@ -618,7 +618,7 @@ u08 *
 STB_Compress(u08 *data, s32 dataLen, s32 *outLen)
 {
     u32 outDataSize = (u32)dataLen + 64;
-    u08 *outData = PushArrayP(STB_Memory_Arena, u08, outDataSize);
+    u08 *outData = PushArray(STB_Memory_Arena, u08, outDataSize);
     *outLen = (s32)libdeflate_zlib_compress(STB_Compressor, data, (size_t)dataLen, outData, (size_t)outDataSize);
     return(outData);
 }
@@ -641,7 +641,7 @@ STB_Compress(u08 *data, s32 dataLen, s32 *outLen)
 #define STBIW_ASSERT(x)
 #endif
 
-#define STBIW_MALLOC(count) PushArrayP(STB_Memory_Arena, u08, count)
+#define STBIW_MALLOC(count) PushArray(STB_Memory_Arena, u08, count)
 #define STBIW_REALLOC(x, y) PrintError("realloc called!") 
 #define STBIW_FREE(x)
 
@@ -700,7 +700,7 @@ global_function
 u32
 WriteImage(const char *outFile, u32 width, u32 height, u32 channels, u08 *image)
 {
-    ResetMemoryArenaP(STB_Memory_Arena);
+    ResetMemoryArena(STB_Memory_Arena);
     switch (Image_Type)
     {
         case png:
@@ -1688,11 +1688,11 @@ FillImage_Thread(void *in)
             bc4BlockStart_y[0] = (textureCoordStart_y[0] - textureBlockStart_y[0]) >> 2;
             bc4BlockStart_y[1] = (textureCoordStart_y[1] - textureBlockStart_y[1]) >> 2;
             u32 bc4BlockEnd_x[2];
-            bc4BlockEnd_x[0] = ((textureCoordEnd_x[0] - textureBlockStart_x[0] - 1) >> 2) + 1;
-            bc4BlockEnd_x[1] = ((textureCoordEnd_x[1] - textureBlockStart_x[1] - 1) >> 2) + 1;
+            bc4BlockEnd_x[0] = textureCoordEnd_x[0] == textureBlockStart_x[0] ? 0 : (((textureCoordEnd_x[0] - textureBlockStart_x[0] - 1) >> 2) + 1);
+            bc4BlockEnd_x[1] = textureCoordEnd_x[1] == textureBlockStart_x[1] ? 0 : (((textureCoordEnd_x[1] - textureBlockStart_x[1] - 1) >> 2) + 1);
             u32 bc4BlockEnd_y[2];
-            bc4BlockEnd_y[0] = ((textureCoordEnd_y[0] - textureBlockStart_y[0] - 1) >> 2) + 1;
-            bc4BlockEnd_y[1] = ((textureCoordEnd_y[1] - textureBlockStart_y[1] - 1) >> 2) + 1;
+            bc4BlockEnd_y[0] = textureCoordEnd_y[0] == textureBlockStart_y[0] ? 0 : (((textureCoordEnd_y[0] - textureBlockStart_y[0] - 1) >> 2) + 1);
+            bc4BlockEnd_y[1] = textureCoordEnd_y[1] == textureBlockStart_y[1] ? 0 : (((textureCoordEnd_y[1] - textureBlockStart_y[1] - 1) >> 2) + 1);
             u32 bc4Size[2];
             bc4Size[0] = textureSize[0] >> 2;
             bc4Size[1] = textureSize[1] >> 2;
@@ -3257,7 +3257,8 @@ MainArgs
 
        outputBytes = (u32)(((f32)(texMinResolution * texMinResolution) * 27.0f) + 0.5f);
 
-       CreateMemoryArena(Working_Set, (textureBufferQueueTotalMemory + outputBytes));
+       //CreateMemoryArena(Working_Set, (textureBufferQueueTotalMemory + outputBytes));
+       CreateMemoryArena(Working_Set, MegaByte(16) + textureBufferQueueTotalMemory);
        Thread_Pool = ThreadPoolInit(&Working_Set, 4);
        Writing_Thread_Pool = ThreadPoolInit(&Working_Set, 1);
        Texture_Buffer_Queue = PushStruct(Working_Set, texture_buffer_queue);    
@@ -3273,7 +3274,8 @@ MainArgs
        Output_Buffer->lodHigherResizeBuffer = PushArray(Working_Set, u08, outputResolution * outputResolution);
        Output_Buffer->lodLowerResizeBuffer = PushArray(Working_Set, u08, outputResolution * outputResolution);
 
-       STB_Memory_Arena = PushSubArena(Working_Set, 12 * outputResolution * outputResolution);
+       //STB_Memory_Arena = PushSubArena(Working_Set, 12 * outputResolution * outputResolution);
+       CreateMemoryArena(STB_Memory_Arena, 12 * outputResolution * outputResolution);
        STB_Compressor = libdeflate_alloc_compressor(12);
        textureBufferQueueArena = PushSubArena(Working_Set, textureBufferQueueTotalMemory);
 

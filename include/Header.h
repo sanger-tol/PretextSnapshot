@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2019 Ed Harry, Wellcome Sanger Institute
+Copyright (c) 2020 Ed Harry, Wellcome Sanger Institute
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -253,8 +253,6 @@ thread_pool
     thread_context **threads;
     threadSig numThreadsAlive;
     threadSig numThreadsWorking;
-    threadSig keepAlive;
-    u32 pad;
     mutex threadCountLock;
     cond threadsAllIdle;
     job_queue jobQueue;
@@ -284,9 +282,11 @@ thread_context
 struct
 memory_arena
 {
-	u08 *base;
-	u64 currentSize;
-	u64 maxSize;
+   memory_arena *next;
+   u08 *base;
+   u64 currentSize;
+   u64 maxSize;
+   u64 active;
 };
 
 struct
@@ -310,44 +310,6 @@ RestoreMemoryArenaFromSnapshot(memory_arena *arena, memory_arena_snapshot *snaps
 }
 
 global_function
-void
-CreateMemoryArena_(memory_arena *arena, u64 size, u32 alignment_pow2 = Default_Memory_Alignment_Pow2)
-{
-#ifndef _WIN32
-	posix_memalign((void **)&arena->base, Pow2(alignment_pow2), size);
-#else
-	#include <memoryapi.h>
-	(void)alignment_pow2;
-	arena->base = (u08 *)VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-#endif
-	arena->currentSize = 0;
-	arena->maxSize = size;
-}
-
-#define CreateMemoryArena(arena, size, ...) CreateMemoryArena_(&arena, size, ##__VA_ARGS__)
-#define CreateMemoryArenaP(arena, size, ...) CreateMemoryArena_(arena, size, ##__VA_ARGS__)
-
-global_function
-void
-ResetMemoryArena_(memory_arena *arena)
-{
-	arena->currentSize = 0;
-}
-
-#define ResetMemoryArena(arena) ResetMemoryArena_(&arena)
-#define ResetMemoryArenaP(arena) ResetMemoryArena_(arena)
-
-global_function
-void
-FreeMemoryArena_(memory_arena *arena)
-{
-	free(arena->base);
-}
-
-#define FreeMemoryArena(arena) FreeMemoryArena_(&arena)
-#define FreeMemoryArenaP(arena) FreeMemoryArena_(arena)
-
-global_function
 u64
 GetAlignmentPadding(u64 base, u32 alignment_pow2)
 {
@@ -368,47 +330,157 @@ AlignUp(u32 x, u32 alignment_pow2)
 }
 
 global_function
+void
+CreateMemoryArena_(memory_arena *arena, u64 size, u32 alignment_pow2 = Default_Memory_Alignment_Pow2)
+{
+   u64 linkSize = sizeof(memory_arena);
+   linkSize += GetAlignmentPadding(linkSize, alignment_pow2);
+   u64 realSize = size + linkSize;
+
+#ifndef _WIN32
+   posix_memalign((void **)&arena->base, Pow2(alignment_pow2), realSize);
+#else
+#include <memoryapi.h>
+   (void)alignment_pow2;
+   arena->base = (u08 *)VirtualAlloc(NULL, realSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#endif
+   arena->currentSize = 0;
+   arena->maxSize = size;
+#pragma clang diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"	
+   arena->next = (memory_arena *)arena->base;
+#pragma clang diagnostic pop
+   arena->base += linkSize;
+
+   arena->next->base = 0;
+   arena->active = 1;
+}
+
+#define CreateMemoryArena(arena, size, ...) CreateMemoryArena_(&arena, size, ##__VA_ARGS__)
+#define CreateMemoryArenaP(arena, size, ...) CreateMemoryArena_(arena, size, ##__VA_ARGS__)
+
+global_function
+void
+ResetMemoryArena_(memory_arena *arena)
+{
+   if (arena->next)
+   {
+      if (arena->next->base)
+      {
+	 ResetMemoryArena_(arena->next);
+      }
+      arena->currentSize = 0;
+   }
+}
+
+#define ResetMemoryArena(arena) ResetMemoryArena_(&arena)
+#define ResetMemoryArenaP(arena) ResetMemoryArena_(arena)
+
+global_function
+void
+FreeMemoryArena_(memory_arena *arena)
+{
+   if (arena->next)
+   {
+      if (arena->next->base)
+      {
+	 FreeMemoryArena_(arena->next);
+      }
+      free(arena->next);
+   }
+}
+
+#define FreeMemoryArena(arena) FreeMemoryArena_(&arena)
+#define FreeMemoryArenaP(arena) FreeMemoryArena_(arena)
+
+global_function
 void *
 PushSize_(memory_arena *arena, u64 size, u32 alignment_pow2 = Default_Memory_Alignment_Pow2)
 {
-	u64 padding = GetAlignmentPadding((u64)(arena->base + arena->currentSize), alignment_pow2);
-	
-	void *result;
-	if((size + arena->currentSize + padding + sizeof(u64)) > arena->maxSize)
-	{
-		result = 0;
+   if (!arena->active && arena->next && arena->next->base && !arena->next->currentSize)
+   {
+      arena->active = 1;
+   }
+   
+   u64 padding = GetAlignmentPadding((u64)(arena->base + arena->currentSize), alignment_pow2);
+
+   void *result;
+   if (!arena->active || ((size + arena->currentSize + padding + sizeof(u64)) > arena->maxSize))
+   {
+      arena->active = 0;
+      if (arena->next)
+      {
+	 if (arena->next->base)
+	 {
+	    result = PushSize_(arena->next, size, alignment_pow2);
+	 }
+	 else
+	 {
+	    u64 linkSize = sizeof(memory_arena);
+	    linkSize += GetAlignmentPadding(linkSize, alignment_pow2);
+	    u64 realSize = size + padding + sizeof(u64) + linkSize;
+	    realSize = Max(realSize, arena->maxSize);
+	    
+	    CreateMemoryArenaP(arena->next, realSize, alignment_pow2);
+	    result = PushSize_(arena->next, size, alignment_pow2);
+	 }
+      }
+      else
+      {
+	 result = 0;
 #if defined(__APPLE__) || defined(_WIN32)
-	 	printf("Push of %llu bytes failed, out of memory.\n", size);   
+#ifdef PrintError
+	 PrintError("Push of %llu bytes failed, out of memory", size);
 #else
-		printf("Push of %lu bytes failed, out of memory.\n", size);
+	 fprintf(stderr, "Push of %llu bytes failed, out of memory.\n", size);
+#endif
+#else
+#ifdef PrintError
+	 PrintError("Push of %lu bytes failed, out of memory", size);
+#else
+	 fprintf(stderr, "Push of %lu bytes failed, out of memory.\n", size);
+#endif
 #endif	
-		*((volatile u32 *)0) = 0;
-	}
-	else
-	{
-		result = arena->base + arena->currentSize + padding;
-		arena->currentSize += (size + padding + sizeof(u64));
+	 *((volatile u32 *)0) = 0;
+      }
+   }
+   else
+   {
+      result = arena->base + arena->currentSize + padding;
+      arena->currentSize += (size + padding + sizeof(u64));
 #pragma clang diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"		
-		*((u64 *)(arena->base + arena->currentSize - sizeof(u64))) = (size + padding);
+      *((u64 *)(arena->base + arena->currentSize - sizeof(u64))) = (size + padding);
 #pragma clang diagnostic pop
-	}
-	
-	return(result);
+   }
+
+   return(result);
 }
 
 global_function
 void
 FreeLastPush_(memory_arena *arena)
 {
-	if (arena->currentSize)
-	{
+   if (!arena->active && arena->next && arena->next->base)
+   {
+      if (arena->next->active && !arena->next->currentSize)
+      {
+	 arena->active = 1;
+	 FreeLastPush_(arena);
+      }
+      else
+      {
+	 FreeLastPush_(arena->next);
+      }
+   }
+   else if (arena->currentSize)
+   {
 #pragma clang diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
-		u64 sizeToRemove = *((u64 *)(arena->base + arena->currentSize - sizeof(u64)));
+      u64 sizeToRemove = *((u64 *)(arena->base + arena->currentSize - sizeof(u64)));
 #pragma clang diagnostic pop		
-		arena->currentSize -= (sizeToRemove + sizeof(u64));
-	}
+      arena->currentSize -= (sizeToRemove + sizeof(u64));
+   }
 }
 
 #define PushStruct(arena, type, ...) (type *)PushSize_(&arena, sizeof(type), ##__VA_ARGS__)
@@ -423,21 +495,23 @@ global_function
 memory_arena *
 PushSubArena_(memory_arena *mainArena, u64 size, u32 alignment_pow2 = Default_Memory_Alignment_Pow2)
 {
-	memory_arena *subArena = PushStructP(mainArena, memory_arena, alignment_pow2);
-	subArena->base = PushArrayP(mainArena, u08, size, alignment_pow2);
-	subArena->currentSize = 0;
-	subArena->maxSize = size;
+   memory_arena *subArena = PushStructP(mainArena, memory_arena, alignment_pow2);
+   subArena->base = PushArrayP(mainArena, u08, size, alignment_pow2);
+   subArena->currentSize = 0;
+   subArena->maxSize = size;
+   subArena->next = 0;
+   subArena->active = 1;
 
-	return(subArena);
+   return(subArena);
 }
 
 #define PushSubArena(arena, size, ...) PushSubArena_(&arena, size, ##__VA_ARGS__)
 #define PushSubArenaP(arena, size, ...) PushSubArena_(arena, size, ##__VA_ARGS__)
 
-/*global_variable
+global_variable
 threadSig
 Threads_KeepAlive;
-*/
+
 global_function
 void
 BinarySemaphoreInit(binary_semaphore *bsem, u32 value)
@@ -580,11 +654,11 @@ ThreadFunc(void *in)
     pool->numThreadsAlive += 1;
     UnlockMutex(pool->threadCountLock);
 
-    while (pool->keepAlive)
+    while (Threads_KeepAlive)
     {
 	BinarySemaphoreWait(pool->jobQueue.hasJobs);
 
-	if (pool->keepAlive)
+	if (Threads_KeepAlive)
 	{
 	    LockMutex(pool->threadCountLock);
 	    ++pool->numThreadsWorking;
@@ -706,10 +780,11 @@ global_function
 thread_pool *
 ThreadPoolInit(memory_arena *arena, u32 nThreads)
 {
+    Threads_KeepAlive = 1;
+
     thread_pool *threadPool = PushStructP(arena, thread_pool);
     threadPool->numThreadsAlive = 0;
     threadPool->numThreadsWorking = 0;
-   threadPool->keepAlive = 1;
 
     JobQueueInit(arena, &threadPool->jobQueue);
 
@@ -777,7 +852,7 @@ ThreadPoolDestroy(thread_pool *threadPool)
 {
     if (threadPool)
     {
-      threadPool->keepAlive = 0;
+	Threads_KeepAlive = 0;
 
 	f64 timeout = 1.0;
 	time_t start, end;
@@ -802,32 +877,53 @@ ThreadPoolDestroy(thread_pool *threadPool)
 
 global_function
 u32
+AreStringsEqual(char *string1, char term1, char *string2, char term2)
+{
+   u32 result = string1 == string2;
+
+   if (!result)
+   {
+      do
+      {
+	 result = *string1++ == *string2++;
+      } while (result && !(*string1 == term1 && *string2 == term2));
+   }
+
+   return(result);
+}
+
+global_function
+u32
 AreNullTerminatedStringsEqual(u08 *string1, u08 *string2)
 {
-	u32 result;
-	do
-	{
-		result = (*string1 == *(string2++));
-	} while(result && (*(string1++) != '\0'));
-
-	return(result);
+   u32 result = string1 == string2;
+   if (!result)
+   {
+      do
+      {
+	 result = (*string1 == *(string2++));
+      } while(result && (*(string1++) != '\0'));
+   }
+   return(result);
 }
 
 global_function
 u32
 AreNullTerminatedStringsEqual(u32 *string1, u32 *string2, u32 nInts) //TODO SIMD array compare
 {
-    u32 result = 1;
-    ForLoop(nInts)
-    {
-	result = string1[index] == string2[index];
-	if (!result)
-	{
+   u32 result = string1 == string2; 
+   if (!result)
+   {
+      ForLoop(nInts)
+      {
+	 result = string1[index] == string2[index];
+	 if (!result)
+	 {
 	    break;
-	}
-    }
-
-    return(result);
+	 }
+      }
+   }
+   return(result);
 }
 
 global_function
@@ -893,6 +989,23 @@ StringToInt(u08 *stringEnd, u32 length)
 	pow *= 10;
     }
     result += (u32)(*--stringEnd - '0') * pow;
+
+    return(result);
+}
+
+global_function
+u64
+StringToInt64(u08 *stringEnd, u32 length)
+{
+    u64 result = 0;
+    u32 pow = 1;
+
+    while (--length > 0)
+    {
+	result += (u64)(*--stringEnd - '0') * pow;
+	pow *= 10;
+    }
+    result += (u64)(*--stringEnd - '0') * pow;
 
     return(result);
 }
@@ -1118,3 +1231,33 @@ FastHash32(void *buf, u64 len, u64 seed)
 }
 
 #endif
+
+global_function
+u32
+IsPrime(u32 n)
+{  
+   if (n <= 1)	return(0);
+   if (n <= 3)	return(1);
+
+   if (n%2 == 0 || n%3 == 0) return(0); 
+
+   for ( u32 i=5;
+	 i*i<=n;
+	 i+=6 )
+   {
+      if (n%i == 0 || n%(i+2) == 0) return(0);
+   }
+
+   return(1);
+}  
+
+global_function
+u32
+NextPrime(u32 N) 
+{ 
+   if (N <= 1) return(2); 
+
+   while (!IsPrime(N)) ++N;
+
+   return(N); 
+} 
