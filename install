@@ -207,6 +207,9 @@ else:
 
     os.chdir("SIMDExtensionWrapper")
 
+    if link_ld:
+        os.symlink("../ld", "ld")
+
     flags = args.flags
     
     command = args.compiler + " SIMDExtensionWrapper.cpp " + flags + " -DProgramName=PretextSnapshot -o PretextSnapshot"
