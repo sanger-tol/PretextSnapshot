@@ -253,6 +253,8 @@ thread_pool
     thread_context **threads;
     threadSig numThreadsAlive;
     threadSig numThreadsWorking;
+    threadSig keepAlive;
+    u32 pad;
     mutex threadCountLock;
     cond threadsAllIdle;
     job_queue jobQueue;
@@ -432,10 +434,10 @@ PushSubArena_(memory_arena *mainArena, u64 size, u32 alignment_pow2 = Default_Me
 #define PushSubArena(arena, size, ...) PushSubArena_(&arena, size, ##__VA_ARGS__)
 #define PushSubArenaP(arena, size, ...) PushSubArena_(arena, size, ##__VA_ARGS__)
 
-global_variable
+/*global_variable
 threadSig
 Threads_KeepAlive;
-
+*/
 global_function
 void
 BinarySemaphoreInit(binary_semaphore *bsem, u32 value)
@@ -578,11 +580,11 @@ ThreadFunc(void *in)
     pool->numThreadsAlive += 1;
     UnlockMutex(pool->threadCountLock);
 
-    while (Threads_KeepAlive)
+    while (pool->keepAlive)
     {
 	BinarySemaphoreWait(pool->jobQueue.hasJobs);
 
-	if (Threads_KeepAlive)
+	if (pool->keepAlive)
 	{
 	    LockMutex(pool->threadCountLock);
 	    ++pool->numThreadsWorking;
@@ -704,11 +706,10 @@ global_function
 thread_pool *
 ThreadPoolInit(memory_arena *arena, u32 nThreads)
 {
-    Threads_KeepAlive = 1;
-
     thread_pool *threadPool = PushStructP(arena, thread_pool);
     threadPool->numThreadsAlive = 0;
     threadPool->numThreadsWorking = 0;
+   threadPool->keepAlive = 1;
 
     JobQueueInit(arena, &threadPool->jobQueue);
 
@@ -776,7 +777,7 @@ ThreadPoolDestroy(thread_pool *threadPool)
 {
     if (threadPool)
     {
-	Threads_KeepAlive = 0;
+      threadPool->keepAlive = 0;
 
 	f64 timeout = 1.0;
 	time_t start, end;
