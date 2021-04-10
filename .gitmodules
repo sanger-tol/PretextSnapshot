@@ -1,0 +1,9 @@
+[submodule "wrapper"]
+	path = wrapper
+	url = https://github.com/wtsi-hpag/SIMDExtensionWrapper
+[submodule "libdeflate"]
+	path = libdeflate
+	url = https://github.com/ebiggers/libdeflate
+[submodule "mpc"]
+	path = mpc
+	url = https://github.com/orangeduck/mpc
