@@ -33,45 +33,26 @@ PretextSnapshot -m map.pretext --sequences "{seq_0, seq_1}"::  Generates an imag
 4 cpu cores <br/>
 (30 * output image size) + 6M RAM, i.e. if your output resolution is set to 1K (1024 pixels) your memory requirments will be (30 * 1K * 1K) + 6M = 36M
 
-# Windows, Mac and Linux builds
-Prebuilt binaries for Windows, Mac and Linux are available<br/>
-The Mac binary was build on MacOS 10.13.6<br/>
-The Linux binary was build on kernel 3.13<br/>
-The Windows binary was build on Windows 10, and should work on at least Windows 7<br/>
-Prebuilt binaries now come in 4-different varieties: AVX2, AVX, SSE4.2 and SSE4.1 along with a wrapper program. Just keep all the binaries on the same path and run the wrapper (PretextSnapshot); the correct binary for your architecture will be executed.
-
 # Third-Party acknowledgements
 PretextSnapshot uses the following third-party libraries:<br/>
-    AVIR image resizing algorithm designed by Aleksey Vaneev (https://github.com/avaneev/avir)<br/>
-    avx_mathfun.h (http://software-lisc.fbk.eu/avx_mathfun/)<br/>
-    sse_mathfun.h (http://gruntthepeon.free.fr/ssemath/sse_mathfun.h)<br/>
-    kgetopt.h (https://github.com/attractivechaos/klib/blob/master/ketopt.h)<br/>
-    libdeflate (https://github.com/ebiggers/libdeflate)<br/>
-    mpc (https://github.com/orangeduck/mpc)<br/>
-    stb_image_write.h (https://github.com/nothings/stb/blob/master/stb_image_write.h)<br/>
-    stb_sprintf.h (https://github.com/nothings/stb/blob/master/stb_sprintf.h)
+* [AVIR image resizing algorithm designed by Aleksey Vaneev](https://github.com/avaneev/avir)<br/>
+* [avx_mathfun.h](http://software-lisc.fbk.eu/avx_mathfun/)<br/>
+* [sse_mathfun.h](http://gruntthepeon.free.fr/ssemath/sse_mathfun.h)<br/>
+* [kgetopt.h](https://github.com/attractivechaos/klib/blob/master/ketopt.h)<br/>
+* [libdeflate](https://github.com/ebiggers/libdeflate)<br/>
+* [mpc](https://github.com/orangeduck/mpc)<br/>
+* [stb_image_write.h](https://github.com/nothings/stb/blob/master/stb_image_write.h)<br/>
+* [stb_sprintf.h](https://github.com/nothings/stb/blob/master/stb_sprintf.h)
 
-# Requirments, building via script (Mac and Linux only)
-make<br/>
-python (2 or 3) to run the installation script<br/>
-clang or gcc to compile<br/>
-
-Tested on Ubuntu linux kernel 3.13 with clang-10, gcc-5.5<br/>
-Tested on MacOS 10.13.6 with clang-10<br/>
-
-PretextSnapshot requires libdeflate (https://github.com/ebiggers/libdeflate). By default the install script will clone and build the libdeflate.a static library for compilation with PretextSnapshot. You can specify your own version to the install script if you wish (you'll have to specify appropriate linking flags as well if you specify a shared library).
-
-PretextSnapshot requires mpc (https://github.com/orangeduck/mpc). By default the install script will clone and build the libmpc.a static library for compilation with PretextSnapshot. You can specify your own version to the install script if you wish (you'll have to specify appropriate linking flags as well if you specify a shared library).
-
-run ./install to build (run ./install -h to see options)
-
-# Requirments, building on Windows
-Only recomended if the prebuilt binary doesn't work for you and you know how to compile executables for Windows.<br/>
-
-Tested on Windows 10 using the Visual Studio 2019 toolchain<br/>
-Tested with clang-9<br/>
-
-Requires libdeflate (https://github.com/ebiggers/libdeflate)<br/>
-Requires mpc (https://github.com/orangeduck/mpc)<br/>
-
-Compile PretextSnapshot.cpp and link against libdeflate and libmpc<br/>
+# Installation
+Requires:
+* clang >= 11.0.0
+* meson >= 0.57.1
+```bash
+git submodule update --init --recursive
+env CXX=clang meson setup --buildtype=release --unity on --prefix=<installation prefix> builddir
+cd builddir
+meson compile
+meson test
+meson install
+```
