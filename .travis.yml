@@ -4,11 +4,6 @@ jobs:
     dist: bionic
   - os: osx
 language: c
-before_install:
-- if [ "$TRAVIS_OS_NAME" = "osx" ]; then brew update; fi
-- if [ "$TRAVIS_OS_NAME" = "osx" ]; then which gsed || brew install gnu-sed; fi
-- if [ "$TRAVIS_OS_NAME" = "osx" ]; then export sed_cmd=gsed; fi
-- if [ "$TRAVIS_OS_NAME" = "linux" ]; then export sed_cmd=sed; fi
 install:
 - if [ "$TRAVIS_OS_NAME" = "osx" ]; then export conda_url=https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh; fi
 - if [ "$TRAVIS_OS_NAME" = "linux" ]; then export conda_url=https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh; fi
