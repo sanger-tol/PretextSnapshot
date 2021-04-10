@@ -20,7 +20,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#define PretextSnapshot_Version "PretextSnapshot Version 0.0.3"
+#define PretextSnapshot_Version "PretextSnapshot Version 0.0.4"
 
 #include "Header.h"
 #include "ColourMapData.cpp"
