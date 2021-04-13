@@ -22,6 +22,4 @@ foreach ext, flag : extensions
         include_directories : include_directories('include'))
 endforeach
 
-e = executable('PretextSnapshot', 'wrapper/SIMDExtensionWrapper.cpp', install : true, cpp_args : base_flags + ['-DProgramName=PretextSnapshot'])
-
-test('Test', e)
+test('Test', executable('PretextSnapshot', 'wrapper/SIMDExtensionWrapper.cpp', install : true, cpp_args : base_flags + ['-DProgramName=PretextSnapshot']))

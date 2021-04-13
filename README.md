@@ -1,4 +1,4 @@
-[![Travis_CI](https://travis-ci.org/wtsi-hpag/PretextSnapshot.svg?branch=master)](https://travis-ci.org/github/wtsi-hpag/PretextSnapshot)
+[![test](https://github.com/wtsi-hpag/PretextSnapshot/actions/workflows/test.yml/badge.svg)](https://github.com/wtsi-hpag/PretextSnapshot/actions/workflows/test.yml)
 [![Anaconda-Server Badge](https://anaconda.org/bioconda/pretext-suite/badges/installer/conda.svg)](https://conda.anaconda.org/bioconda)
 [![Anaconda-Server Badge](https://anaconda.org/bioconda/pretextsnapshot/badges/downloads.svg)](https://anaconda.org/bioconda/pretextsnapshot)
 # PretextSnapshot
