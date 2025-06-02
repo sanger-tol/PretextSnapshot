@@ -65,3 +65,5 @@ jobs:
         conda activate test-environment
         cd builddir
         meson test
+        ./PretextSnapshot 
+        ./PretextSnapshot --version

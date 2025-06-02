@@ -20,7 +20,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#define PretextSnapshot_Version "PretextSnapshot Version 0.0.4"
+#define my_String_(x) #x
+#define my_String(x) my_String_(x)
+
+#define PretextSnapshot_Version "PretextSnapshot Version " my_String(PV)
 
 #include "Header.h"
 #include "ColourMapData.cpp"
@@ -254,7 +257,7 @@ Options:
 
 	-c/--colourMap cmap:	Either, a non-negative integer, indexing the colour map to use.
 			        Or, the name of the colour map to use.
-			        Defaults to "Three Wave Blue-Green-Yellow" i.e. "5".
+			        Defaults to "Three Wave Blue-Green-Yellow" i.e. "8".
 
 	--printColourMapNames:	Prints a list of the available colour maps.
 			        Cannot be used with any other option. 
@@ -1857,7 +1860,8 @@ Blend_Images_Thread(void *in)
         __m256 pixFloat = _mm256_add_ps(pixFloat_0, pixFloat_1);
 
         __m256i pixi = _mm256_cvtps_epi32(pixFloat);
-        pixi = _mm256_packus_epi32(pixi, _mm256_permute2f128_ps(pixi, pixi, 1));
+        // pixi = _mm256_packus_epi32(pixi, _mm256_permute2f128_ps(pixi, pixi, 1));
+        pixi = _mm256_packus_epi32(pixi, _mm256_permute2f128_si256(pixi, pixi, 1));
         pixi = _mm256_packus_epi16(pixi, pixi);
         __m128i pixi128 = _mm256_castsi256_si128 (pixi);
         *(s64 *)pix_0 = _mm_cvtsi128_si64(pixi128);
@@ -2133,7 +2137,8 @@ LinearRGBTo8BitsRGB_8Wide(__m256 linearRGBFloat)
     __m256 sRGBFloat = _mm256_mul_ps(_mm256_blendv_ps(highRes, lowRes, mask), _mm256_broadcast_ss(&_255));
 
     __m256i sRGB256i = _mm256_cvtps_epi32(sRGBFloat);
-    sRGB256i = _mm256_packus_epi32(sRGB256i, _mm256_permute2f128_ps(sRGB256i, sRGB256i, 1));
+    // sRGB256i = _mm256_packus_epi32(sRGB256i, _mm256_permute2f128_ps(sRGB256i, sRGB256i, 1));
+    sRGB256i = _mm256_packus_epi32(sRGB256i, _mm256_permute2f128_si256(sRGB256i, sRGB256i, 1));
     sRGB256i = _mm256_packus_epi16(sRGB256i, sRGB256i);
     __m128i sRGB128i = _mm256_castsi256_si128 (sRGB256i);
     u64 result = 0;
@@ -2499,7 +2504,7 @@ Min_Texels = 64;
 
 global_variable
 u32
-Colour_Map_Index = 5;
+Colour_Map_Index = 5+3;
 
 global_function
 u32
@@ -3072,7 +3077,7 @@ MainArgs
                      {
                         ForLoop(Number_of_Colour_Maps)
                         {
-                           fprintf(stdout, "%s\n", Colour_Map_Names[index]);
+                           fprintf(stdout, "%2d %s\n", index, Colour_Map_Names[index]);
                         }
                         goto end;
                      }
