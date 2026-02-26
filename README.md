@@ -29,6 +29,29 @@ PretextSnapshot -m map.pretext --sequences "seq_0, seq_1"  ::  Generates an imag
 PretextSnapshot -m map.pretext --sequences "seq_0 > seq_10" ::  Generates an image between "seq_0" and "seq_10".<br/>
 PretextSnapshot -m map.pretext --sequences "{seq_0, seq_1}"::  Generates an image of the inter-sequence region between "seq_0" and "seq_1".<br/>
 
+# Custom order snapshots
+To generate snapshots using a custom chromosome/scaffold/sequence order from a file:
+
+```sh
+PretextSnapshot -m map.pretext --order order.txt
+```
+
+The order file should list one sequence name per line (empty lines and `#` comments are ignored). By default, a single image is created with sequences displayed in the order file's order. Use `--per-sequence` for one image per sequence:
+
+```sh
+PretextSnapshot -m map.pretext --order order.txt --per-sequence
+```
+
+Example order file:
+
+```
+chr1
+chr2
+chr3
+chrX
+chrY
+```
+
 # Requirments, running
 4 cpu cores <br/>
 (30 * output image size) + 6M RAM, i.e. if your output resolution is set to 1K (1024 pixels) your memory requirments will be (30 * 1K * 1K) + 6M = 36M
@@ -46,11 +69,11 @@ PretextSnapshot uses the following third-party libraries:<br/>
 
 # Installation
 Requires:
-* clang >= 11.0.0
+* g++ (or clang) >= 11.0.0
 * meson >= 0.57.1
 ```bash
 git submodule update --init --recursive
-env CXX=clang meson setup --buildtype=release --unity on --prefix=<installation prefix> builddir
+env CXX=g++ meson setup --buildtype=release --unity on builddir
 cd builddir
 meson compile
 meson test
