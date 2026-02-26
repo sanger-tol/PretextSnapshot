@@ -1398,7 +1398,6 @@ global_function
 char *
 ReadOrderFileAndBuildSequenceString(const char *orderFilePath, u32 contiguous)
 {
-    char *result = 0;
     FILE *file = fopen(orderFilePath, "r");
     if (!file)
     {
@@ -2649,6 +2648,7 @@ FillInGrid_Thread(void *in)
 
                     if (skipCount > 0)
                     {
+                        u32 lastRow = start_y + range_y - 1;
 #ifdef UsingAVX
                         u32 backCount = countMod + 1;
                         AlphaBlendGrid_8Wide(pixelData);
@@ -2657,7 +2657,7 @@ FillInGrid_Thread(void *in)
                         while (backFillCount < backCount && skipBackIndex <= range_y)
                         {
                             ++skipBackIndex;
-                            u32 rowIdx = row - skipBackIndex;
+                            u32 rowIdx = lastRow - skipBackIndex;
                             if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                             {
                                 u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
@@ -2676,7 +2676,7 @@ FillInGrid_Thread(void *in)
                         while (backFillCount < backCount && skipBackIndex <= range_y)
                         {
                             ++skipBackIndex;
-                            u32 rowIdx = row - skipBackIndex;
+                            u32 rowIdx = lastRow - skipBackIndex;
                             if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                             {
                                 u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
@@ -2749,9 +2749,9 @@ FillInGrid_Thread(void *in)
                                     {
                                         u32 idx = lineariseImageIndex(colIdx, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
-                                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
-                                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
-                                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
                                         FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                                     }
                                 }
@@ -2767,9 +2767,9 @@ FillInGrid_Thread(void *in)
                                     {
                                         u32 idx = lineariseImageIndex(colIdx, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
-                                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
-                                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
-                                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
                                         FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                                     }
                                 }
@@ -2807,9 +2807,9 @@ FillInGrid_Thread(void *in)
                             {
                                 u32 idx = lineariseImageIndex(colIdx, pixel);
                                 u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
                                 FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                             }
                         }
@@ -2826,9 +2826,9 @@ FillInGrid_Thread(void *in)
                             {
                                 u32 idx = lineariseImageIndex(colIdx, pixel);
                                 u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
                                 FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                             }
                         }
@@ -2891,9 +2891,9 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                             {
                                 u32 idx = lineariseImageIndex(colIdx, pixel);
                                 u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
                                 FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                             }
                         }
@@ -2908,9 +2908,9 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                             {
                                 u32 idx = lineariseImageIndex(colIdx, pixel);
                                 u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
                                 FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                             }
                         }
@@ -2945,9 +2945,9 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                     {
                         u32 idx = lineariseImageIndex(colIdx, pixel);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
-                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
                         FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                     }
                 }
@@ -2963,9 +2963,9 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                     {
                         u32 idx = lineariseImageIndex(colIdx, pixel);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
-                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
                         FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                     }
                 }
