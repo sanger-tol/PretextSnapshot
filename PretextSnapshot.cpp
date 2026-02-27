@@ -1,5 +1,7 @@
 /*
 Copyright (c) 2019 Ed Harry, Wellcome Sanger Institute
+author: Ed Harry, Wellcome Sanger Institute, 2019
+author: Yumi Sims, Wellcome Sanger Institute, 2026
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -31,7 +33,7 @@ SOFTWARE.
 global_variable
 u08
 Licence[] = R"lic(
-Copyright (c) 2019 Ed Harry, Wellcome Sanger Institute
+Copyright (c) Wellcome Sanger Institute
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -273,7 +275,15 @@ Options:
 			        Defaults to the name of the pretext map + "_".
 
 	--sequences sqncs:	Sequence specification string. Each entry, except for "=all", corresponds to one output image.
-			        Defaults to "=full, =all".
+			        Defaults to "=full" (single contiguous image of the full map).
+
+	--order ord:		Path to a file listing sequence names, one per line (empty lines and # comments ignored).
+			        By default creates a single image with sequences in the order file's order.
+			        Cannot be used with --sequences.
+
+	--per-sequence:		With --order, create one image per sequence instead of a single reordered image.
+
+	--contiguous:		With --order, create a single image with sequences in the order file's order (default).
 
 	--sequenceHelp:		Sequence specification string format documentation.
 			        Cannot be used with any other option.
@@ -1297,13 +1307,217 @@ ParseTargetSyntax(image_target **headPtr, mpc_ast_t *syntaxTree)
     }
 }
 
+struct
+custom_order_info
+{
+    u32 *orderIndices;
+    u32 nOrder;
+    u64 *customCumulativeTexels;
+    u32 totalCustomTexels;
+    u32 minMapTexel;
+    u32 maxMapTexel;
+    u32 mapTexelRange;
+};
+
+global_variable
+custom_order_info *Custom_Order_Info = 0;
+
+global_function
+u32
+ReadOrderFileCustomOrder(const char *orderFilePath)
+{
+    FILE *file = fopen(orderFilePath, "r");
+    if (!file)
+    {
+        PrintError("Cannot open order file \'%s\'", orderFilePath);
+        return 0;
+    }
+    u32 maxIndices = 65536;
+    u32 *indices = (u32 *)PushArray(Working_Set, u32, maxIndices);
+    u32 nIndices = 0;
+    char lineBuf[512];
+    while (fgets(lineBuf, (s32)ArrayCount(lineBuf), file))
+    {
+        char *line = lineBuf;
+        while (*line == ' ' || *line == '\t') ++line;
+        if (*line == '\0' || *line == '\n' || *line == '#') continue;
+        char *nameEnd = line;
+        while (*nameEnd && *nameEnd != ' ' && *nameEnd != '\t' && *nameEnd != '\n' && *nameEnd != '\r') ++nameEnd;
+        if (nameEnd == line) continue;
+        if (nIndices >= maxIndices) { fclose(file); PrintError("Order file has too many sequences"); return 0; }
+        char save = *nameEnd;
+        *nameEnd = '\0';
+        u32 name32[16];
+        u32 index = 0;
+        PushStringIntoIntArray((u32 *)name32, ArrayCount(name32), (u08 *)line);
+        if (!ContigHashTableLookup((u32 *)name32, ArrayCount(name32), &index))
+        {
+            *nameEnd = save;
+            fclose(file);
+            PrintError("\'%s\' is not the name of a sequence in this map", line);
+            return 0;
+        }
+        *nameEnd = save;
+        indices[nIndices++] = index;
+    }
+    fclose(file);
+    if (nIndices == 0)
+    {
+        PrintError("Order file \'%s\' is empty or contains no valid sequence names", orderFilePath);
+        return 0;
+    }
+    u32 nTexels = Map_Properties->numberOfTextures1D * Map_Properties->textureResolution;
+    u64 *customCumulativeTexels = (u64 *)PushArray(Working_Set, u64, nIndices + 1);
+    customCumulativeTexels[0] = 0;
+    u32 minMapTexel = nTexels, maxMapTexel = 0;
+    for (u32 k = 0; k < nIndices; ++k)
+    {
+        contig *c = Map_Properties->contigs + indices[k];
+        u32 segTexels = (u32)((f64)c->fractionalLength * (f64)nTexels);
+        customCumulativeTexels[k + 1] = customCumulativeTexels[k] + segTexels;
+        u32 mapStart = (u32)((f64)c->previousCumulativeLength * (f64)nTexels);
+        u32 mapEnd = mapStart + segTexels;
+        if (mapStart < minMapTexel) minMapTexel = mapStart;
+        if (mapEnd > maxMapTexel) maxMapTexel = mapEnd;
+    }
+    u32 totalCustomTexels = (u32)customCumulativeTexels[nIndices];
+    u32 mapTexelRange = maxMapTexel - minMapTexel;
+    if (mapTexelRange == 0) mapTexelRange = 1;
+    Custom_Order_Info = PushStruct(Working_Set, custom_order_info);
+    Custom_Order_Info->orderIndices = indices;
+    Custom_Order_Info->nOrder = nIndices;
+    Custom_Order_Info->customCumulativeTexels = customCumulativeTexels;
+    Custom_Order_Info->totalCustomTexels = totalCustomTexels;
+    Custom_Order_Info->minMapTexel = minMapTexel;
+    Custom_Order_Info->maxMapTexel = maxMapTexel;
+    Custom_Order_Info->mapTexelRange = mapTexelRange;
+    return 1;
+}
+
+global_function
+char *
+ReadOrderFileAndBuildSequenceString(const char *orderFilePath, u32 contiguous)
+{
+    FILE *file = fopen(orderFilePath, "r");
+    if (!file)
+    {
+        PrintError("Cannot open order file \'%s\'", orderFilePath);
+        return 0;
+    }
+
+    u32 bufferSize = KiloByte(64);
+    char *buffer = (char *)PushArray(Working_Set, u08, bufferSize);
+    u32 used = 0;
+
+    char lineBuf[512];
+    u32 firstName = 1;
+
+    u32 maxIndices = 65536;
+    u32 *indices = contiguous ? (u32 *)PushArray(Working_Set, u32, maxIndices) : 0;
+    u32 nIndices = 0;
+    u32 minIdx = 0, maxIdx = 0;
+
+    while (fgets(lineBuf, (s32)ArrayCount(lineBuf), file))
+    {
+        char *line = lineBuf;
+        while (*line == ' ' || *line == '\t') ++line;
+        if (*line == '\0' || *line == '\n' || *line == '#') continue;
+
+        char *nameEnd = line;
+        while (*nameEnd && *nameEnd != ' ' && *nameEnd != '\t' && *nameEnd != '\n' && *nameEnd != '\r') ++nameEnd;
+        if (nameEnd == line) continue;
+
+        u32 nameLen = (u32)(nameEnd - line);
+
+        if (contiguous)
+        {
+            if (nIndices >= maxIndices)
+            {
+                fclose(file);
+                PrintError("Order file \'%s\' has too many sequences", orderFilePath);
+                return 0;
+            }
+            {
+                char save = *nameEnd;
+                *nameEnd = '\0';
+                u32 name32[16];
+                u32 index = 0;
+                PushStringIntoIntArray((u32 *)name32, ArrayCount(name32), (u08 *)line);
+                if (!ContigHashTableLookup((u32 *)name32, ArrayCount(name32), &index))
+                {
+                    *nameEnd = save;
+                    fclose(file);
+                    PrintError("\'%s\' is not the name of a sequence in this map", line);
+                    return 0;
+                }
+                *nameEnd = save;
+                indices[nIndices++] = index;
+                if (nIndices == 1) minIdx = maxIdx = index;
+                else
+                {
+                    if (index < minIdx) minIdx = index;
+                    if (index > maxIdx) maxIdx = index;
+                }
+            }
+        }
+        else
+        {
+            u32 need = nameLen + (firstName ? 0 : 2);
+            if (used + need >= bufferSize)
+            {
+                fclose(file);
+                PrintError("Order file \'%s\' produces sequence string too long", orderFilePath);
+                return 0;
+            }
+
+            if (!firstName)
+            {
+                buffer[used++] = ',';
+                buffer[used++] = ' ';
+            }
+            for (u32 i = 0; i < nameLen; ++i) buffer[used++] = line[i];
+            firstName = 0;
+        }
+    }
+    fclose(file);
+
+    if (contiguous)
+    {
+        if (nIndices == 0)
+        {
+            PrintError("Order file \'%s\' is empty or contains no valid sequence names", orderFilePath);
+            return 0;
+        }
+        used = 0;
+        {
+            const s08 *fromName = GetContigName(minIdx);
+            const s08 *toName = GetContigName(maxIdx);
+            while (*fromName && used < bufferSize - 1) buffer[used++] = *fromName++;
+            if (used + 4 >= bufferSize) { PrintError("Sequence names too long for contiguous output"); return 0; }
+            buffer[used++] = ' '; buffer[used++] = '>'; buffer[used++] = ' ';
+            while (*toName && used < bufferSize - 1) buffer[used++] = *toName++;
+            buffer[used] = '\0';
+        }
+    }
+    else
+    {
+        if (used == 0)
+        {
+            PrintError("Order file \'%s\' is empty or contains no valid sequence names", orderFilePath);
+            return 0;
+        }
+        buffer[used] = '\0';
+    }
+    return buffer;
+}
+
 global_function
 u32
 ProcessImageTargetOptions(image_target ***head, char *optionString = 0)
 {
     u32 returnResult = 1;
     
-    if (!optionString) optionString = (char *)"=full,=all";
+    if (!optionString) optionString = (char *)"=full";
 
     mpc_parser_t *position = mpc_new("position");
     mpc_parser_t *name = mpc_new("name");
@@ -1510,6 +1724,80 @@ file_atlas_entry
 global_variable
 file_atlas_entry *
 File_Atlas;
+
+global_function
+u32
+MapTexelToCustomTexel(u32 mapTexel)
+{
+    if (!Custom_Order_Info) return mapTexel;
+    custom_order_info *o = Custom_Order_Info;
+    u32 nTexels = Map_Properties->numberOfTextures1D * Map_Properties->textureResolution;
+    f64 mapPos = (f64)mapTexel / (f64)nTexels;
+    for (u32 k = 0; k < o->nOrder; ++k)
+    {
+        contig *c = Map_Properties->contigs + o->orderIndices[k];
+        f64 segStart = (f64)c->previousCumulativeLength;
+        f64 segEnd = segStart + (f64)c->fractionalLength;
+        if (mapPos >= segStart && mapPos < segEnd)
+        {
+            f64 frac = (mapPos - segStart) / (f64)c->fractionalLength;
+            return (u32)((f64)o->customCumulativeTexels[k] + frac * (f64)(o->customCumulativeTexels[k + 1] - o->customCumulativeTexels[k]));
+        }
+    }
+    return 0;
+}
+
+global_function
+u32
+CustomTexelToMapTexel(u32 customTexel)
+{
+    if (!Custom_Order_Info) return customTexel;
+    custom_order_info *o = Custom_Order_Info;
+    u32 nTexels = Map_Properties->numberOfTextures1D * Map_Properties->textureResolution;
+    for (u32 k = 0; k < o->nOrder; ++k)
+    {
+        u64 segStart = o->customCumulativeTexels[k];
+        u64 segEnd = o->customCumulativeTexels[k + 1];
+        if (customTexel >= segStart && customTexel < segEnd)
+        {
+            contig *c = Map_Properties->contigs + o->orderIndices[k];
+            u32 mapStart = (u32)((f64)c->previousCumulativeLength * (f64)nTexels);
+            u64 segLen = segEnd - segStart;
+            if (segLen == 0) return mapStart;
+            f64 frac = (f64)(customTexel - segStart) / (f64)segLen;
+            u32 mapLen = (u32)((f64)c->fractionalLength * (f64)nTexels);
+            return mapStart + (u32)(frac * (f64)mapLen);
+        }
+    }
+    return 0;
+}
+
+global_function
+void
+RemapBufferToCustomOrder(u08 *buffer, u32 res)
+{
+    if (!Custom_Order_Info) return;
+    custom_order_info *o = Custom_Order_Info;
+    u08 *temp = (u08 *)PushArray(Working_Set, u08, res * res);
+    for (u32 iy = 0; iy < res; ++iy)
+    {
+        for (u32 ix = 0; ix < res; ++ix)
+        {
+            u32 customTexel_x = (u32)((f64)ix * (f64)o->totalCustomTexels / (f64)res);
+            u32 customTexel_y = (u32)((f64)iy * (f64)o->totalCustomTexels / (f64)res);
+            if (customTexel_x >= o->totalCustomTexels) customTexel_x = o->totalCustomTexels - 1;
+            if (customTexel_y >= o->totalCustomTexels) customTexel_y = o->totalCustomTexels - 1;
+            u32 mapTexel_x = CustomTexelToMapTexel(customTexel_x);
+            u32 mapTexel_y = CustomTexelToMapTexel(customTexel_y);
+            u32 srcX = (u32)((f64)(mapTexel_x - o->minMapTexel) * (f64)res / (f64)o->mapTexelRange);
+            u32 srcY = (u32)((f64)(mapTexel_y - o->minMapTexel) * (f64)res / (f64)o->mapTexelRange);
+            if (srcX >= res) srcX = res - 1;
+            if (srcY >= res) srcY = res - 1;
+            temp[iy * res + ix] = buffer[srcY * res + srcX];
+        }
+    }
+    for (u32 i = 0; i < res * res; ++i) buffer[i] = temp[i];
+}
 
 struct
 bc4_block
@@ -2290,38 +2578,55 @@ FillInGrid_Thread(void *in)
 #endif
 
                     u32 countMod = 0;
-                    u32 index = 0;
-                    u32 count = 0;
-                    for (   index = start_y, count = 0;
-                            count < range_y;
-                            ++index, ++count )
+                    u32 skipCount = 0;
+                    for (u32 row = start_y; row < start_y + range_y; ++row)
                     {
-                        u32 pixIndex = lineariseImageIndex(pixel, index);
+                        if (CheckPixelBitFlag(pixel, row, resolution_x, Output_Buffer->outputImageBufferGridFillFlags)) continue;
+
+                        u32 pixIndex = lineariseImageIndex(pixel, row);
                         u08 pixels[3];
                         pixels[0] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 0];
                         pixels[1] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 1];
                         pixels[2] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 2];
 
-                        countMod = count & (dataSize - 1);
-                        if (count && !countMod)
+                        countMod = skipCount & (dataSize - 1);
+                        if (skipCount && !countMod)
                         {
 #ifdef UsingAVX
                             AlphaBlendGrid_8Wide(pixelData);
-                            ForLoop2(dataSize)
+                            u32 skipBackIndex = 0;
+                            u32 backFillCount = 0;
+                            while (backFillCount < dataSize && skipBackIndex < range_y)
                             {
-                                u32 idx = lineariseImageIndex(pixel, index - dataSize + index2);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> (index2 << 3)) & (u64)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> (index2 << 3)) & (u64)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> (index2 << 3)) & (u64)0xff);
+                                ++skipBackIndex;
+                                u32 rowIdx = row - skipBackIndex;
+                                if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                {
+                                    u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
+                                    u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                    FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                                }
                             }
 #else
                             AlphaBlendGrid_4Wide(pixelData);
-                            ForLoop2(dataSize)
+                            u32 skipBackIndex = 0;
+                            u32 backFillCount = 0;
+                            while (backFillCount < dataSize && skipBackIndex < range_y)
                             {
-                                u32 idx = lineariseImageIndex(pixel, index - dataSize + index2);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> (index2 << 3)) & (u32)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> (index2 << 3)) & (u32)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> (index2 << 3)) & (u32)0xff);
+                                ++skipBackIndex;
+                                u32 rowIdx = row - skipBackIndex;
+                                if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                {
+                                    u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
+                                    u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                    FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                                }
                             }
 #endif
                             pixelData[0] = 0;
@@ -2338,30 +2643,52 @@ FillInGrid_Thread(void *in)
                         pixelData[1] |= (u32)pixels[1] << (countMod << 3);
                         pixelData[2] |= (u32)pixels[2] << (countMod << 3);
 #endif
-                        FillPixelBitFlag(pixel, index, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                        ++skipCount;
                     }
 
+                    if (skipCount > 0)
+                    {
+                        u32 lastRow = start_y + range_y - 1;
 #ifdef UsingAVX
-                    u32 backCount = countMod + 1;
-                    AlphaBlendGrid_8Wide(pixelData);
-                    ForLoop2(backCount)
-                    {
-                        u32 idx = lineariseImageIndex(pixel, index - backCount + index2);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> (index2 << 3)) & (u64)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> (index2 << 3)) & (u64)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> (index2 << 3)) & (u64)0xff);
-                    }
+                        u32 backCount = countMod + 1;
+                        AlphaBlendGrid_8Wide(pixelData);
+                        u32 skipBackIndex = 0;
+                        u32 backFillCount = 0;
+                        while (backFillCount < backCount && skipBackIndex <= range_y)
+                        {
+                            ++skipBackIndex;
+                            u32 rowIdx = lastRow - skipBackIndex;
+                            if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
+                                u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
+                        }
 #else
-                    u32 backCount = countMod + 1;
-                    AlphaBlendGrid_4Wide(pixelData);
-                    ForLoop2(backCount)
-                    {
-                        u32 idx = lineariseImageIndex(pixel, index - backCount + index2);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> (index2 << 3)) & (u32)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> (index2 << 3)) & (u32)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> (index2 << 3)) & (u32)0xff);
-                    }
+                        u32 backCount = countMod + 1;
+                        AlphaBlendGrid_4Wide(pixelData);
+                        u32 skipBackIndex = 0;
+                        u32 backFillCount = 0;
+                        while (backFillCount < backCount && skipBackIndex <= range_y)
+                        {
+                            ++skipBackIndex;
+                            u32 rowIdx = lastRow - skipBackIndex;
+                            if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
+                                u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
+                        }
 #endif
+                    }
 
                 }
             }
@@ -2414,30 +2741,36 @@ FillInGrid_Thread(void *in)
                                 AlphaBlendGrid_8Wide(pixelData);
                                 u32 skipBackIndex = 0;
                                 u32 backFillCount = 0;
-                                while (backFillCount < dataSize)
+                                while (backFillCount < dataSize && skipBackIndex < range_x)
                                 {
-                                    if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                    ++skipBackIndex;
+                                    u32 colIdx = index - skipBackIndex;
+                                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                                     {
-                                        u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
+                                        u32 idx = lineariseImageIndex(colIdx, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                        FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                                     }
                                 }
 #else
                                 AlphaBlendGrid_4Wide(pixelData);
                                 u32 skipBackIndex = 0;
                                 u32 backFillCount = 0;
-                                while (backFillCount < dataSize)
+                                while (backFillCount < dataSize && skipBackIndex < range_x)
                                 {
-                                    if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                    ++skipBackIndex;
+                                    u32 colIdx = index - skipBackIndex;
+                                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                                     {
-                                        u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
+                                        u32 idx = lineariseImageIndex(colIdx, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                        FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                                     }
                                 }
 #endif
@@ -2459,40 +2792,303 @@ FillInGrid_Thread(void *in)
                         }
                     }
 
-#ifdef UsingAVX
-                    u32 backCount = countMod + 1;
-                    AlphaBlendGrid_8Wide(pixelData);
-                    u32 skipBackIndex = 0;
-                    u32 backFillCount = 0;
-                    while (backFillCount < backCount)
+                    if (skipCount > 0)
                     {
-                        if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+#ifdef UsingAVX
+                        u32 backCount = countMod + 1;
+                        AlphaBlendGrid_8Wide(pixelData);
+                        u32 skipBackIndex = 0;
+                        u32 backFillCount = 0;
+                        while (backFillCount < backCount && skipBackIndex <= range_x)
                         {
-                            u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
-                            u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                            ++skipBackIndex;
+                            u32 colIdx = index - skipBackIndex;
+                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 idx = lineariseImageIndex(colIdx, pixel);
+                                u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
+                        }
+#else
+                        u32 backCount = countMod + 1;
+                        AlphaBlendGrid_4Wide(pixelData);
+                        u32 skipBackIndex = 0;
+                        u32 backFillCount = 0;
+                        while (backFillCount < backCount && skipBackIndex <= range_x)
+                        {
+                            ++skipBackIndex;
+                            u32 colIdx = index - skipBackIndex;
+                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 idx = lineariseImageIndex(colIdx, pixel);
+                                u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
+                        }
+#endif
+                    }
+                }
+            }
+        }
+    }
+}
+
+global_function
+void
+FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
+{
+    if (!Custom_Order_Info || Custom_Order_Info->nOrder < 2) return;
+    custom_order_info *o = Custom_Order_Info;
+    u32 halfGridSize = Grid->size >> 1;
+    memset((void *)Output_Buffer->outputImageBufferGridFillFlags, 0, NumOutputImageBufferGridFillFlags(Output_Buffer));
+    auto lineariseImageIndex = [resolution_x](u32 x, u32 y)->u32 { return(3 * ((y * resolution_x) + x)); };
+    u32 start_x = 0, range_x = resolution_x, start_y = 0, range_y = resolution_y;
+
+    for (u32 k = 1; k < o->nOrder; ++k)
+    {
+        /* Horizontal lines first (same style as FillInGrid_Thread) */
+        u32 pixelCentre = (u32)((f64)o->customCumulativeTexels[k] * (f64)resolution_y / (f64)o->totalCustomTexels);
+        if (pixelCentre >= resolution_y) pixelCentre = resolution_y - 1;
+        u32 pixelStart = pixelCentre < halfGridSize ? 0 : ((pixelCentre + halfGridSize) > resolution_y ? (resolution_y - Grid->size) : (pixelCentre - halfGridSize));
+        for (u32 pixel = pixelStart, pixelCount = 0; pixelCount < Grid->size && pixel < resolution_y; ++pixelCount, ++pixel)
+        {
+#ifdef UsingAVX
+            u64 pixelData[3] = {0, 0, 0};
+            u32 dataSize = 8;
+#else
+            u32 pixelData[3] = {0, 0, 0};
+            u32 dataSize = 4;
+#endif
+            u32 countMod = 0, index = 0, count = 0, skipCount = 0;
+            for (index = start_x, count = 0; count < range_x; ++index, ++count)
+            {
+                if (!CheckPixelBitFlag(index, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                {
+                    u32 pixIndex = lineariseImageIndex(index, pixel);
+                    u08 pixels[3];
+                    pixels[0] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 0];
+                    pixels[1] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 1];
+                    pixels[2] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 2];
+
+                    countMod = skipCount & (dataSize - 1);
+                    if (skipCount && !countMod)
+                    {
+#ifdef UsingAVX
+                        AlphaBlendGrid_8Wide(pixelData);
+                        u32 skipBackIndex = 0, backFillCount = 0;
+                        while (backFillCount < dataSize && skipBackIndex < range_x)
+                        {
+                            ++skipBackIndex;
+                            u32 colIdx = index - skipBackIndex;
+                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 idx = lineariseImageIndex(colIdx, pixel);
+                                u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
+                        }
+#else
+                        AlphaBlendGrid_4Wide(pixelData);
+                        u32 skipBackIndex = 0, backFillCount = 0;
+                        while (backFillCount < dataSize && skipBackIndex < range_x)
+                        {
+                            ++skipBackIndex;
+                            u32 colIdx = index - skipBackIndex;
+                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 idx = lineariseImageIndex(colIdx, pixel);
+                                u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
+                        }
+#endif
+                        pixelData[0] = 0; pixelData[1] = 0; pixelData[2] = 0;
+                    }
+
+#ifdef UsingAVX
+                    pixelData[0] |= (u64)pixels[0] << (countMod << 3);
+                    pixelData[1] |= (u64)pixels[1] << (countMod << 3);
+                    pixelData[2] |= (u64)pixels[2] << (countMod << 3);
+#else
+                    pixelData[0] |= (u32)pixels[0] << (countMod << 3);
+                    pixelData[1] |= (u32)pixels[1] << (countMod << 3);
+                    pixelData[2] |= (u32)pixels[2] << (countMod << 3);
+#endif
+                    ++skipCount;
+                }
+            }
+
+            if (skipCount > 0)
+            {
+#ifdef UsingAVX
+                u32 backCount = countMod + 1;
+                AlphaBlendGrid_8Wide(pixelData);
+                u32 skipBackIndex = 0, backFillCount = 0;
+                while (backFillCount < backCount && skipBackIndex <= range_x)
+                {
+                    ++skipBackIndex;
+                    u32 colIdx = index - skipBackIndex;
+                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    {
+                        u32 idx = lineariseImageIndex(colIdx, pixel);
+                        u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                        FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                    }
+                }
+#else
+                u32 backCount = countMod + 1;
+                AlphaBlendGrid_4Wide(pixelData);
+                u32 skipBackIndex = 0, backFillCount = 0;
+                while (backFillCount < backCount && skipBackIndex <= range_x)
+                {
+                    ++skipBackIndex;
+                    u32 colIdx = index - skipBackIndex;
+                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    {
+                        u32 idx = lineariseImageIndex(colIdx, pixel);
+                        u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                        FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                    }
+                }
+#endif
+            }
+        }
+
+        /* Vertical lines second (same style as FillInGrid_Thread) */
+        pixelCentre = (u32)((f64)o->customCumulativeTexels[k] * (f64)resolution_x / (f64)o->totalCustomTexels);
+        if (pixelCentre >= resolution_x) pixelCentre = resolution_x - 1;
+        pixelStart = pixelCentre < halfGridSize ? 0 : ((pixelCentre + halfGridSize) > resolution_x ? (resolution_x - Grid->size) : (pixelCentre - halfGridSize));
+        for (u32 pixel = pixelStart, pixelCount = 0; pixelCount < Grid->size && pixel < resolution_x; ++pixelCount, ++pixel)
+        {
+#ifdef UsingAVX
+            u64 pixelData[3] = {0, 0, 0};
+            u32 dataSize = 8;
+#else
+            u32 pixelData[3] = {0, 0, 0};
+            u32 dataSize = 4;
+#endif
+            u32 countMod = 0, idx = 0, count = 0, skipCount = 0;
+            for (idx = start_y, count = 0; count < range_y; ++idx, ++count)
+            {
+                if (CheckPixelBitFlag(pixel, idx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags)) continue;
+
+                u32 pixIndex = lineariseImageIndex(pixel, idx);
+                u08 pixels[3];
+                pixels[0] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 0];
+                pixels[1] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 1];
+                pixels[2] = GetCurrentOutputBuffer(Output_Buffer)[pixIndex + 2];
+
+                countMod = skipCount & (dataSize - 1);
+                if (skipCount && !countMod)
+                {
+#ifdef UsingAVX
+                    AlphaBlendGrid_8Wide(pixelData);
+                    u32 skipBackIndex = 0, backFillCount = 0;
+                    while (backFillCount < dataSize && skipBackIndex < range_y)
+                    {
+                        ++skipBackIndex;
+                        u32 rowIdx = idx - skipBackIndex;
+                        if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        {
+                            u32 i = lineariseImageIndex(pixel, rowIdx);
+                            u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
+                            GetCurrentOutputBuffer(Output_Buffer)[i + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                            GetCurrentOutputBuffer(Output_Buffer)[i + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                            GetCurrentOutputBuffer(Output_Buffer)[i + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                            FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                         }
                     }
 #else
-                    u32 backCount = countMod + 1;
                     AlphaBlendGrid_4Wide(pixelData);
-                    u32 skipBackIndex = 0;
-                    u32 backFillCount = 0;
-                    while (backFillCount < backCount)
+                    u32 skipBackIndex = 0, backFillCount = 0;
+                    while (backFillCount < dataSize && skipBackIndex < range_y)
                     {
-                        if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        ++skipBackIndex;
+                        u32 rowIdx = idx - skipBackIndex;
+                        if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
-                            u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
-                            u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                            u32 i = lineariseImageIndex(pixel, rowIdx);
+                            u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
+                            GetCurrentOutputBuffer(Output_Buffer)[i + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                            GetCurrentOutputBuffer(Output_Buffer)[i + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                            GetCurrentOutputBuffer(Output_Buffer)[i + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                            FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                         }
                     }
 #endif
+                    pixelData[0] = 0; pixelData[1] = 0; pixelData[2] = 0;
                 }
+
+#ifdef UsingAVX
+                pixelData[0] |= (u64)pixels[0] << (countMod << 3);
+                pixelData[1] |= (u64)pixels[1] << (countMod << 3);
+                pixelData[2] |= (u64)pixels[2] << (countMod << 3);
+#else
+                pixelData[0] |= (u32)pixels[0] << (countMod << 3);
+                pixelData[1] |= (u32)pixels[1] << (countMod << 3);
+                pixelData[2] |= (u32)pixels[2] << (countMod << 3);
+#endif
+                ++skipCount;
+            }
+
+            if (skipCount > 0)
+            {
+#ifdef UsingAVX
+                u32 backCount = countMod + 1;
+                AlphaBlendGrid_8Wide(pixelData);
+                u32 skipBackIndex = 0, backFillCount = 0;
+                while (backFillCount < backCount && skipBackIndex <= range_y)
+                {
+                    ++skipBackIndex;
+                    u32 rowIdx = idx - skipBackIndex;
+                    if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    {
+                        u32 i = lineariseImageIndex(pixel, rowIdx);
+                        u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                        GetCurrentOutputBuffer(Output_Buffer)[i + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[i + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[i + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                        FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                    }
+                }
+#else
+                u32 backCount = countMod + 1;
+                AlphaBlendGrid_4Wide(pixelData);
+                u32 skipBackIndex = 0, backFillCount = 0;
+                while (backFillCount < backCount && skipBackIndex <= range_y)
+                {
+                    ++skipBackIndex;
+                    u32 rowIdx = idx - skipBackIndex;
+                    if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    {
+                        u32 i = lineariseImageIndex(pixel, rowIdx);
+                        u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                        GetCurrentOutputBuffer(Output_Buffer)[i + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[i + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                        GetCurrentOutputBuffer(Output_Buffer)[i + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                        FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                    }
+                }
+#endif
             }
         }
     }
@@ -2699,6 +3295,11 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
         ThreadPoolWait(Thread_Pool);
     }
 
+    if (Custom_Order_Info)
+    {
+        RemapBufferToCustomOrder(Output_Buffer->lodHigherResizeBuffer, outputResolution_x);
+    }
+
     {
         u32 nPix = outputResolution_x * outputResolution_y;
         u32 halfNPix = nPix >> 1;
@@ -2807,16 +3408,6 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
         data[3].indexRange_x = outputResolution_x - data[0].indexRange_x - data[1].indexRange_x - data[2].indexRange_x;
         data[3].indexRange_y = outputResolution_y - data[0].indexRange_y - data[1].indexRange_y - data[2].indexRange_y;
 
-        data[0].doX = 1;
-        data[1].doX = 1;
-        data[2].doX = 1;
-        data[3].doX = 1;
-        ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 0));
-        ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 1));
-        ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 2));
-        ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 3));
-        ThreadPoolWait(Thread_Pool);
-
         data[0].doX = 0;
         data[1].doX = 0;
         data[2].doX = 0;
@@ -2826,6 +3417,20 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
         ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 2));
         ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 3));
         ThreadPoolWait(Thread_Pool);
+
+        data[0].doX = 1;
+        data[1].doX = 1;
+        data[2].doX = 1;
+        data[3].doX = 1;
+        ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 0));
+        ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 1));
+        ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 2));
+        ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 3));
+        ThreadPoolWait(Thread_Pool);
+    }
+    else if (Custom_Order_Info)
+    {
+        FillInGridCustomOrder(outputResolution_x, outputResolution_y);
     }
 
 FillImageExit:
@@ -2933,6 +3538,8 @@ MainArgs
     u32 outputPrefixSetAttempt = 0;
 
     char *targetOptions = 0;
+    const char *orderFilePath = 0;
+    u32 orderContiguous = 1;
 
     u32 minTexelsSet = 1;
     
@@ -2961,6 +3568,9 @@ MainArgs
             { (char *)"folder",         ko_required_argument,   304 },
             { (char *)"prefix",         ko_required_argument,   305 },
             { (char *)"sequences",      ko_required_argument,   306 },
+            { (char *)"order",          ko_required_argument,   320 },
+            { (char *)"contiguous",     ko_no_argument,         321 },
+            { (char *)"per-sequence",   ko_no_argument,         322 },
             { (char *)"minTexels",      ko_required_argument,   307 },
             { (char *)"gridSize",       ko_required_argument,   308 },
             { (char *)"gridColour",     ko_required_argument,   309 },
@@ -3035,6 +3645,24 @@ MainArgs
                case 306:
                   {
                      targetOptions = opt.arg;
+                  }
+                  break;
+
+               case 320:
+                  {
+                     orderFilePath = opt.arg;
+                  }
+                  break;
+
+               case 321:
+                  {
+                     orderContiguous = 1;
+                  }
+                  break;
+
+               case 322:
+                  {
+                     orderContiguous = 0;
                   }
                   break;
 
@@ -3166,6 +3794,20 @@ MainArgs
     {
        fprintf(stdout, "%s\n", (char *)Help);
        goto end;
+    }
+
+    if (targetOptions && orderFilePath)
+    {
+        PrintError("Cannot use both --sequences and --order");
+        returnCode = EXIT_FAILURE;
+        goto end;
+    }
+
+    if (!orderFilePath && orderContiguous == 0)
+    {
+        PrintError("--per-sequence requires --order");
+        returnCode = EXIT_FAILURE;
+        goto end;
     }
 
     if (!inputMapSet)
@@ -3468,14 +4110,42 @@ MainArgs
                     }
 
                     image_target **targetHeadPtr = 0;
-                    if (!ProcessImageTargetOptions(&targetHeadPtr, targetOptions))
+                    image_target *targetHead = 0;
+                    char *sequenceToUse = targetOptions;
+                    u32 useCustomOrder = 0;
+                    if (orderFilePath)
                     {
-                        returnCode = EXIT_FAILURE;
-                        goto closeFileAndExit;
+                        if (orderContiguous)
+                        {
+                            if (!ReadOrderFileCustomOrder(orderFilePath))
+                            {
+                                returnCode = EXIT_FAILURE;
+                                goto closeFileAndExit;
+                            }
+                            useCustomOrder = 1;
+                        }
+                        else
+                        {
+                            char *orderString = ReadOrderFileAndBuildSequenceString(orderFilePath, 0);
+                            if (!orderString)
+                            {
+                                returnCode = EXIT_FAILURE;
+                                goto closeFileAndExit;
+                            }
+                            sequenceToUse = orderString;
+                        }
                     }
-                    image_target *targetHead = *targetHeadPtr;
+                    if (!useCustomOrder)
+                    {
+                        if (!ProcessImageTargetOptions(&targetHeadPtr, sequenceToUse))
+                        {
+                            returnCode = EXIT_FAILURE;
+                            goto closeFileAndExit;
+                        }
+                        targetHead = *targetHeadPtr;
+                    }
 
-                    if (!targetHead)
+                    if (!targetHead && !useCustomOrder)
                     {
                         PrintError("No images to process");
                         returnCode = EXIT_FAILURE;
@@ -3488,6 +4158,31 @@ MainArgs
                         u32 outputResolution_x = 0, outputResolution_y = 0;
                         u32 nTexels = Map_Properties->numberOfTextures1D * Map_Properties->textureResolution;
 
+                        if (useCustomOrder)
+                        {
+                            stbsp_snprintf((char *)outputPrefixEnd, (s32)outputPathRemainingBuffer, "CustomOrder");
+                            if (FillImage(Custom_Order_Info->minMapTexel, Custom_Order_Info->minMapTexel,
+                                         Custom_Order_Info->mapTexelRange, Custom_Order_Info->mapTexelRange,
+                                         &outputResolution_x, &outputResolution_y, &returnMessageIndex, 0))
+                            {
+                                if (returnMessageIndex < Error_Warning_Divide_Message_Index_)
+                                {
+                                    PrintError("Error while generating custom order map: %s", Messages[returnMessageIndex]);
+                                    returnCode = EXIT_FAILURE;
+                                }
+                                else
+                                {
+                                    PrintWarning("Warning while generating custom order map: %s", Messages[returnMessageIndex]);
+                                }
+                            }
+                            else if (WriteImage_Threaded((const char *)outputPath, outputResolution_x, outputResolution_y, 3, FilpCurrentOutputBuffer(Output_Buffer)))
+                            {
+                                PrintError(Messages[Image_Write_Error_Message_Index]);
+                                returnCode = EXIT_FAILURE;
+                            }
+                            Custom_Order_Info = 0;
+                        }
+                        else
                         TraverseLinkedList(targetHead, image_target)
                         {
                             switch (node->type)
