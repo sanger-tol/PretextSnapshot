@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2019 Ed Harry, Wellcome Sanger Institute
+Copyright (c) 2024,2025 Genome Research Ltd.
 author: Ed Harry, Wellcome Sanger Institute, 2019
 author: Yumi Sims, Wellcome Sanger Institute, 2026
 
@@ -33,7 +33,9 @@ SOFTWARE.
 global_variable
 u08
 Licence[] = R"lic(
-Copyright (c) Wellcome Sanger Institute
+Copyright (c) 2024,2025 Genome Research Ltd.
+author: Ed Harry, Wellcome Sanger Institute, 2019
+author: Yumi Sims, Wellcome Sanger Institute, 2026
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
