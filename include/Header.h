@@ -102,7 +102,7 @@ typedef size_t memptr;
 #define ForLoop2(n) for (u32 index2 = 0; index2 < (n); ++index2)
 #define ForLoop3(n) for (u32 index3 = 0; index3 < (n); ++index3)
 #define ForLoopN(i, n) for (u32 i = 0; i < (n); ++i)
-#define TraverseLinkedList(startNode, type) for (type *(node) = (startNode); node; node = node->next)
+#define TraverseLinkedList(startNode, type) for (type *node = (startNode); node; node = node->next)
 
 #define ArgCount argc
 #define ArgBuffer argv
