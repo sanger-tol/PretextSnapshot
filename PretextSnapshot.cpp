@@ -2599,19 +2599,35 @@ FillInGrid_Thread(void *in)
                             AlphaBlendGrid_8Wide(pixelData);
                             ForLoop2(dataSize)
                             {
-                                u32 idx = lineariseImageIndex(pixel, index - dataSize + index2);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> (index2 << 3)) & (u64)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> (index2 << 3)) & (u64)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> (index2 << 3)) & (u64)0xff);
+                                ++skipBackIndex;
+                                if (skipBackIndex > row) continue;
+                                u32 rowIdx = row - skipBackIndex;
+                                if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                {
+                                    u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
+                                    u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                    FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                                }
                             }
 #else
                             AlphaBlendGrid_4Wide(pixelData);
                             ForLoop2(dataSize)
                             {
-                                u32 idx = lineariseImageIndex(pixel, index - dataSize + index2);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> (index2 << 3)) & (u32)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> (index2 << 3)) & (u32)0xff);
-                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> (index2 << 3)) & (u32)0xff);
+                                ++skipBackIndex;
+                                if (skipBackIndex > row) continue;
+                                u32 rowIdx = row - skipBackIndex;
+                                if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                {
+                                    u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
+                                    u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                    GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                    FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                                }
                             }
 #endif
                             pixelData[0] = 0;
@@ -2632,24 +2648,46 @@ FillInGrid_Thread(void *in)
                     }
 
 #ifdef UsingAVX
-                    u32 backCount = countMod + 1;
-                    AlphaBlendGrid_8Wide(pixelData);
-                    ForLoop2(backCount)
-                    {
-                        u32 idx = lineariseImageIndex(pixel, index - backCount + index2);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> (index2 << 3)) & (u64)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> (index2 << 3)) & (u64)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> (index2 << 3)) & (u64)0xff);
-                    }
+                        u32 backCount = countMod + 1;
+                        AlphaBlendGrid_8Wide(pixelData);
+                        u32 skipBackIndex = 0;
+                        u32 backFillCount = 0;
+                        while (backFillCount < backCount && skipBackIndex < range_y)
+                        {
+                            ++skipBackIndex;
+                            if (skipBackIndex > lastRow) continue;
+                            u32 rowIdx = lastRow - skipBackIndex;
+                            if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
+                                u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
+                        }
 #else
-                    u32 backCount = countMod + 1;
-                    AlphaBlendGrid_4Wide(pixelData);
-                    ForLoop2(backCount)
-                    {
-                        u32 idx = lineariseImageIndex(pixel, index - backCount + index2);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> (index2 << 3)) & (u32)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> (index2 << 3)) & (u32)0xff);
-                        GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> (index2 << 3)) & (u32)0xff);
+                        u32 backCount = countMod + 1;
+                        AlphaBlendGrid_4Wide(pixelData);
+                        u32 skipBackIndex = 0;
+                        u32 backFillCount = 0;
+                        while (backFillCount < backCount && skipBackIndex < range_y)
+                        {
+                            ++skipBackIndex;
+                            if (skipBackIndex > lastRow) continue;
+                            u32 rowIdx = lastRow - skipBackIndex;
+                            if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 pixIdx = lineariseImageIndex(pixel, rowIdx);
+                                u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[pixIdx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                FillPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
+                        }
+#endif
                     }
 #endif
 
@@ -2706,7 +2744,10 @@ FillInGrid_Thread(void *in)
                                 u32 backFillCount = 0;
                                 while (backFillCount < dataSize)
                                 {
-                                    if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                    ++skipBackIndex;
+                                    if (skipBackIndex > index) continue;
+                                    u32 colIdx = index - skipBackIndex;
+                                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                                     {
                                         u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -2722,7 +2763,10 @@ FillInGrid_Thread(void *in)
                                 u32 backFillCount = 0;
                                 while (backFillCount < dataSize)
                                 {
-                                    if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                    ++skipBackIndex;
+                                    if (skipBackIndex > index) continue;
+                                    u32 colIdx = index - skipBackIndex;
+                                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                                     {
                                         u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -2752,37 +2796,45 @@ FillInGrid_Thread(void *in)
                     }
 
 #ifdef UsingAVX
-                    u32 backCount = countMod + 1;
-                    AlphaBlendGrid_8Wide(pixelData);
-                    u32 skipBackIndex = 0;
-                    u32 backFillCount = 0;
-                    while (backFillCount < backCount)
-                    {
-                        if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        u32 backCount = countMod + 1;
+                        AlphaBlendGrid_8Wide(pixelData);
+                        u32 skipBackIndex = 0;
+                        u32 backFillCount = 0;
+                        while (backFillCount < backCount && skipBackIndex < range_x)
                         {
-                            u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
-                            u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
-                            FillPixelBitFlag(index - skipBackIndex, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            ++skipBackIndex;
+                            if (skipBackIndex > index) continue;
+                            u32 colIdx = index - skipBackIndex;
+                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 idx = lineariseImageIndex(colIdx, pixel);
+                                u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
+                                FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
                         }
                     }
 #else
-                    u32 backCount = countMod + 1;
-                    AlphaBlendGrid_4Wide(pixelData);
-                    u32 skipBackIndex = 0;
-                    u32 backFillCount = 0;
-                    while (backFillCount < backCount)
-                    {
-                        if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        u32 backCount = countMod + 1;
+                        AlphaBlendGrid_4Wide(pixelData);
+                        u32 skipBackIndex = 0;
+                        u32 backFillCount = 0;
+                        while (backFillCount < backCount && skipBackIndex < range_x)
                         {
-                            u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
-                            u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
-                            GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
-                            FillPixelBitFlag(index - skipBackIndex, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            ++skipBackIndex;
+                            if (skipBackIndex > index) continue;
+                            u32 colIdx = index - skipBackIndex;
+                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            {
+                                u32 idx = lineariseImageIndex(colIdx, pixel);
+                                u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
+                                GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
+                                FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            }
                         }
                     }
 #endif
@@ -2838,6 +2890,7 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                         while (backFillCount < dataSize && skipBackIndex < range_x)
                         {
                             ++skipBackIndex;
+                            if (skipBackIndex > index) continue;
                             u32 colIdx = index - skipBackIndex;
                             if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                             {
@@ -2855,6 +2908,7 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                         while (backFillCount < dataSize && skipBackIndex < range_x)
                         {
                             ++skipBackIndex;
+                            if (skipBackIndex > index) continue;
                             u32 colIdx = index - skipBackIndex;
                             if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                             {
@@ -2889,9 +2943,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 u32 backCount = countMod + 1;
                 AlphaBlendGrid_8Wide(pixelData);
                 u32 skipBackIndex = 0, backFillCount = 0;
-                while (backFillCount < backCount && skipBackIndex <= range_x)
+                while (backFillCount < backCount && skipBackIndex < range_x)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > index) continue;
                     u32 colIdx = index - skipBackIndex;
                     if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
@@ -2907,9 +2962,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 u32 backCount = countMod + 1;
                 AlphaBlendGrid_4Wide(pixelData);
                 u32 skipBackIndex = 0, backFillCount = 0;
-                while (backFillCount < backCount && skipBackIndex <= range_x)
+                while (backFillCount < backCount && skipBackIndex < range_x)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > index) continue;
                     u32 colIdx = index - skipBackIndex;
                     if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
@@ -2958,6 +3014,7 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                     while (backFillCount < dataSize && skipBackIndex < range_y)
                     {
                         ++skipBackIndex;
+                        if (skipBackIndex > idx) continue;
                         u32 rowIdx = idx - skipBackIndex;
                         if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
@@ -2975,6 +3032,7 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                     while (backFillCount < dataSize && skipBackIndex < range_y)
                     {
                         ++skipBackIndex;
+                        if (skipBackIndex > idx) continue;
                         u32 rowIdx = idx - skipBackIndex;
                         if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
@@ -3008,9 +3066,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 u32 backCount = countMod + 1;
                 AlphaBlendGrid_8Wide(pixelData);
                 u32 skipBackIndex = 0, backFillCount = 0;
-                while (backFillCount < backCount && skipBackIndex <= range_y)
+                while (backFillCount < backCount && skipBackIndex < range_y)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > idx) continue;
                     u32 rowIdx = idx - skipBackIndex;
                     if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
@@ -3026,9 +3085,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 u32 backCount = countMod + 1;
                 AlphaBlendGrid_4Wide(pixelData);
                 u32 skipBackIndex = 0, backFillCount = 0;
-                while (backFillCount < backCount && skipBackIndex <= range_y)
+                while (backFillCount < backCount && skipBackIndex < range_y)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > idx) continue;
                     u32 rowIdx = idx - skipBackIndex;
                     if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
