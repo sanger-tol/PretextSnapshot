@@ -79,3 +79,9 @@ meson compile
 meson test
 meson install
 ```
+
+If `meson setup` fails with missing files under `libdeflate/` or `mpc/`, initialize submodules first:
+```bash
+git submodule update --init --recursive
+```
+Then rerun `meson setup ...`. If setup fails, `builddir` is not a valid Meson build directory yet, so `meson compile/test/install` will also fail until setup succeeds.
