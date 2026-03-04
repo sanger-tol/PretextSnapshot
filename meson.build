@@ -4,6 +4,21 @@ project('PretextSnapshot', ['c', 'cpp'],
     version: '0.0.6'
 )
 
+fs = import('fs')
+required_submodule_files = [
+    'libdeflate/lib/x86/cpu_features.c',
+    'libdeflate/lib/deflate_compress.c',
+    'mpc/mpc.c',
+]
+
+foreach f : required_submodule_files
+    if not fs.exists(f)
+        error('Missing required source file: ' + f + '\n'
+              + 'PretextSnapshot depends on git submodules. Run:\n'
+              + '  git submodule update --init --recursive')
+    endif
+endforeach
+
 thread_dep = dependency('threads')
 math_dep = meson.get_compiler('cpp').find_library('m', required : true)
 cpp_dep = meson.get_compiler('cpp').find_library('stdc++', required : true)
