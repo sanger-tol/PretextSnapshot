@@ -2656,7 +2656,7 @@ FillInGrid_Thread(void *in)
                         AlphaBlendGrid_8Wide(pixelData);
                         u32 skipBackIndex = 0;
                         u32 backFillCount = 0;
-                        while (backFillCount < backCount && skipBackIndex <= range_y)
+                        while (backFillCount < backCount && skipBackIndex < range_y)
                         {
                             ++skipBackIndex;
                             u32 rowIdx = lastRow - skipBackIndex;
@@ -2675,7 +2675,7 @@ FillInGrid_Thread(void *in)
                         AlphaBlendGrid_4Wide(pixelData);
                         u32 skipBackIndex = 0;
                         u32 backFillCount = 0;
-                        while (backFillCount < backCount && skipBackIndex <= range_y)
+                        while (backFillCount < backCount && skipBackIndex < range_y)
                         {
                             ++skipBackIndex;
                             u32 rowIdx = lastRow - skipBackIndex;
@@ -2801,7 +2801,7 @@ FillInGrid_Thread(void *in)
                         AlphaBlendGrid_8Wide(pixelData);
                         u32 skipBackIndex = 0;
                         u32 backFillCount = 0;
-                        while (backFillCount < backCount && skipBackIndex <= range_x)
+                        while (backFillCount < backCount && skipBackIndex < range_x)
                         {
                             ++skipBackIndex;
                             u32 colIdx = index - skipBackIndex;
@@ -2820,7 +2820,7 @@ FillInGrid_Thread(void *in)
                         AlphaBlendGrid_4Wide(pixelData);
                         u32 skipBackIndex = 0;
                         u32 backFillCount = 0;
-                        while (backFillCount < backCount && skipBackIndex <= range_x)
+                        while (backFillCount < backCount && skipBackIndex < range_x)
                         {
                             ++skipBackIndex;
                             u32 colIdx = index - skipBackIndex;
@@ -2939,7 +2939,7 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 u32 backCount = countMod + 1;
                 AlphaBlendGrid_8Wide(pixelData);
                 u32 skipBackIndex = 0, backFillCount = 0;
-                while (backFillCount < backCount && skipBackIndex <= range_x)
+                while (backFillCount < backCount && skipBackIndex < range_x)
                 {
                     ++skipBackIndex;
                     u32 colIdx = index - skipBackIndex;
@@ -2957,7 +2957,7 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 u32 backCount = countMod + 1;
                 AlphaBlendGrid_4Wide(pixelData);
                 u32 skipBackIndex = 0, backFillCount = 0;
-                while (backFillCount < backCount && skipBackIndex <= range_x)
+                while (backFillCount < backCount && skipBackIndex < range_x)
                 {
                     ++skipBackIndex;
                     u32 colIdx = index - skipBackIndex;
@@ -3058,7 +3058,7 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 u32 backCount = countMod + 1;
                 AlphaBlendGrid_8Wide(pixelData);
                 u32 skipBackIndex = 0, backFillCount = 0;
-                while (backFillCount < backCount && skipBackIndex <= range_y)
+                while (backFillCount < backCount && skipBackIndex < range_y)
                 {
                     ++skipBackIndex;
                     u32 rowIdx = idx - skipBackIndex;
@@ -3076,7 +3076,7 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 u32 backCount = countMod + 1;
                 AlphaBlendGrid_4Wide(pixelData);
                 u32 skipBackIndex = 0, backFillCount = 0;
-                while (backFillCount < backCount && skipBackIndex <= range_y)
+                while (backFillCount < backCount && skipBackIndex < range_y)
                 {
                     ++skipBackIndex;
                     u32 rowIdx = idx - skipBackIndex;
