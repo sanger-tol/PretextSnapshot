@@ -69,12 +69,26 @@ AddSingleTextureBufferToQueue(single_texture_buffer_queue *queue, texture_buffer
 #define Compression_Header_Size 128
 
 global_function
+u64
+RecommendedTextureBufferQueueArenaSize(u32 nBytesForTextureBuffer)
+{
+    u64 perBuffer = (u64)nBytesForTextureBuffer + (u64)Compression_Header_Size + 256;
+    u64 nBuffers = (u64)Number_Of_Texture_Buffer_Queues * (u64)Number_Of_Texture_Buffers_Per_Queue;
+    return (nBuffers * perBuffer) + 1024;
+}
+
+global_function
 u32
 InitialiseTextureBufferQueue(memory_arena *arena, texture_buffer_queue *queue, u32 nBytesForTextureBuffer, const char *fileName, u32 *returnMessageIndex)
 {
     u32 returnValue = 0;
 
     queue->queues = PushArrayP(arena, single_texture_buffer_queue *, Number_Of_Texture_Buffer_Queues);
+    if (!queue->queues)
+    {
+        *returnMessageIndex = Texture_Load_Queue_Decompress_Error_Message_Index;
+        return 1;
+    }
     queue->index = 0;
     u32 nAdded = 0;
     u32 nFileHandles = 0;
@@ -82,13 +96,28 @@ InitialiseTextureBufferQueue(memory_arena *arena, texture_buffer_queue *queue, u
     ForLoop(Number_Of_Texture_Buffer_Queues)
     {
         queue->queues[index] = PushStructP(arena, single_texture_buffer_queue);
+        if (!queue->queues[index])
+        {
+            *returnMessageIndex = Texture_Load_Queue_Decompress_Error_Message_Index;
+            return 1;
+        }
         InitialiseSingleTextureBufferQueue(queue->queues[index]);
 
         ForLoop2(Number_Of_Texture_Buffers_Per_Queue)
         {
             texture_buffer *buffer = PushStructP(arena, texture_buffer);
+            if (!buffer)
+            {
+                *returnMessageIndex = Texture_Load_Queue_Decompress_Error_Message_Index;
+                return 1;
+            }
             buffer->texture = PushArrayP(arena, u08, nBytesForTextureBuffer);
             buffer->compressionBuffer = PushArrayP(arena, u08, nBytesForTextureBuffer + Compression_Header_Size);
+            if (!buffer->texture || !buffer->compressionBuffer)
+            {
+                *returnMessageIndex = Texture_Load_Queue_Decompress_Error_Message_Index;
+                return 1;
+            }
             buffer->decompressor = libdeflate_alloc_decompressor();
             buffer->file = fopen(fileName, "rb");
             buffer->homeIndex = index;
