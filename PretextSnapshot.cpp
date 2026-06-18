@@ -2850,8 +2850,10 @@ FillInGrid_Thread(void *in)
                                 while (backFillCount < dataSize && skipBackIndex < range_x)
                                 {
                                     ++skipBackIndex;
+                                    if (skipBackIndex > index) break;
                                     u32 colIdx = index - skipBackIndex;
-                                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                    if (colIdx < start_x) break;
+                                    if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                                     {
                                         u32 idx = lineariseImageIndex(colIdx, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -2867,8 +2869,10 @@ FillInGrid_Thread(void *in)
                                 while (backFillCount < dataSize && skipBackIndex < range_x)
                                 {
                                     ++skipBackIndex;
+                                    if (skipBackIndex > index) break;
                                     u32 colIdx = index - skipBackIndex;
-                                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                    if (colIdx < start_x) break;
+                                    if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                                     {
                                         u32 idx = lineariseImageIndex(colIdx, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -2906,8 +2910,10 @@ FillInGrid_Thread(void *in)
                     while (backFillCount < backCount && skipBackIndex <= range_x)
                     {
                         ++skipBackIndex;
+                        if (skipBackIndex > index) break;
                         u32 colIdx = index - skipBackIndex;
-                        if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        if (colIdx < start_x) break;
+                        if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
                             u32 idx = lineariseImageIndex(colIdx, pixel);
                             u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -2924,8 +2930,10 @@ FillInGrid_Thread(void *in)
                     while (backFillCount < backCount && skipBackIndex <= range_x)
                     {
                         ++skipBackIndex;
+                        if (skipBackIndex > index) break;
                         u32 colIdx = index - skipBackIndex;
-                        if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        if (colIdx < start_x) break;
+                        if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
                             u32 idx = lineariseImageIndex(colIdx, pixel);
                             u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -2991,8 +2999,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                         while (backFillCount < dataSize && skipBackIndex < range_x)
                         {
                             ++skipBackIndex;
+                            if (skipBackIndex > index) break;
                             u32 colIdx = index - skipBackIndex;
-                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            if (colIdx < start_x) break;
+                            if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                             {
                                 u32 idx = lineariseImageIndex(colIdx, pixel);
                                 u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -3008,8 +3018,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                         while (backFillCount < dataSize && skipBackIndex < range_x)
                         {
                             ++skipBackIndex;
+                            if (skipBackIndex > index) break;
                             u32 colIdx = index - skipBackIndex;
-                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            if (colIdx < start_x) break;
+                            if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                             {
                                 u32 idx = lineariseImageIndex(colIdx, pixel);
                                 u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -3045,8 +3057,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 while (backFillCount < backCount && skipBackIndex <= range_x)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > index) break;
                     u32 colIdx = index - skipBackIndex;
-                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    if (colIdx < start_x) break;
+                    if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
                         u32 idx = lineariseImageIndex(colIdx, pixel);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -3063,8 +3077,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 while (backFillCount < backCount && skipBackIndex <= range_x)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > index) break;
                     u32 colIdx = index - skipBackIndex;
-                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    if (colIdx < start_x) break;
+                    if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
                         u32 idx = lineariseImageIndex(colIdx, pixel);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -3111,8 +3127,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                     while (backFillCount < dataSize && skipBackIndex < range_y)
                     {
                         ++skipBackIndex;
+                        if (skipBackIndex > idx) break;
                         u32 rowIdx = idx - skipBackIndex;
-                        if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        if (rowIdx < start_y) break;
+                        if (!CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
                             u32 i = lineariseImageIndex(pixel, rowIdx);
                             u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -3128,8 +3146,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                     while (backFillCount < dataSize && skipBackIndex < range_y)
                     {
                         ++skipBackIndex;
+                        if (skipBackIndex > idx) break;
                         u32 rowIdx = idx - skipBackIndex;
-                        if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        if (rowIdx < start_y) break;
+                        if (!CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
                             u32 i = lineariseImageIndex(pixel, rowIdx);
                             u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -3164,8 +3184,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 while (backFillCount < backCount && skipBackIndex <= range_y)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > idx) break;
                     u32 rowIdx = idx - skipBackIndex;
-                    if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    if (rowIdx < start_y) break;
+                    if (!CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
                         u32 i = lineariseImageIndex(pixel, rowIdx);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -3182,8 +3204,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 while (backFillCount < backCount && skipBackIndex <= range_y)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > idx) break;
                     u32 rowIdx = idx - skipBackIndex;
-                    if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    if (rowIdx < start_y) break;
+                    if (!CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
                         u32 i = lineariseImageIndex(pixel, rowIdx);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
