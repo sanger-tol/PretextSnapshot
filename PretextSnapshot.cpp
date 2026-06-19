@@ -1407,6 +1407,7 @@ ReadOrderFileCustomOrder(const char *orderFilePath)
         contig *c = Map_Properties->contigs + indices[k];
         customFracSum += (f64)c->fractionalLength;
         u32 customEnd = (u32)(customFracSum * (f64)nTexels);
+        if (customEnd > nTexels) customEnd = nTexels;
         if (customEnd < (u32)customCumulativeTexels[k]) customEnd = (u32)customCumulativeTexels[k];
         customCumulativeTexels[k + 1] = customEnd;
 
