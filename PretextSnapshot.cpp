@@ -1346,8 +1346,12 @@ ContigMapTexelRange(contig *c, u32 nTexels, u32 *mapStart, u32 *mapEnd)
 {
     f64 startFrac = (f64)c->previousCumulativeLength;
     f64 endFrac = startFrac + (f64)c->fractionalLength;
+    startFrac = Max(0.0, Min(1.0, startFrac));
+    endFrac = Max(startFrac, Min(1.0, endFrac));
     *mapStart = (u32)(startFrac * (f64)nTexels);
     *mapEnd = (u32)(endFrac * (f64)nTexels);
+    if (*mapStart > nTexels) *mapStart = nTexels;
+    if (*mapEnd > nTexels) *mapEnd = nTexels;
     if (*mapEnd < *mapStart) *mapEnd = *mapStart;
 }
 
@@ -1419,6 +1423,7 @@ ReadOrderFileCustomOrder(const char *orderFilePath)
     {
         /* Any remainder from cumulative floor goes on the last segment so totalCustomTexels matches the genome fraction sum. */
         u32 expectedTotalCustomTexels = (u32)(customFracSum * (f64)nTexels + 0.5);
+        if (expectedTotalCustomTexels > nTexels) expectedTotalCustomTexels = nTexels;
         if ((u32)customCumulativeTexels[nIndices] < expectedTotalCustomTexels)
         {
             customCumulativeTexels[nIndices] = expectedTotalCustomTexels;
@@ -1758,10 +1763,32 @@ ProcessColourMapSelection(u32 *returnValue, u08 *string)
     return(returnResult);
 }
 
+global_function
+u32
+FileSeekSet(FILE *file, u64 offset)
+{
+#ifdef _WIN32
+    return(_fseeki64(file, (__int64)offset, SEEK_SET) != 0);
+#else
+    return(fseeko(file, (off_t)offset, SEEK_SET) != 0);
+#endif
+}
+
+global_function
+u64
+FileTell(FILE *file)
+{
+#ifdef _WIN32
+    return((u64)_ftelli64(file));
+#else
+    return((u64)ftello(file));
+#endif
+}
+
 struct
 file_atlas_entry
 {
-    u32 base;
+    u64 base;
     u32 nBytes;
 };
 
@@ -2019,7 +2046,7 @@ FillImage_Thread(void *in)
             if (linearTextureIndex >= Number_Of_Texture_Blocks)
             {
                 *returnStatus = 1;
-                return;
+                goto FillImageThreadExit;
             }
 
             file_atlas_entry *entry = File_Atlas + linearTextureIndex;
@@ -2027,24 +2054,24 @@ FillImage_Thread(void *in)
             if (!nBytes || nBytes > (Bytes_Per_Texture + Compression_Header_Size))
             {
                 *returnStatus = 1;
-                return;
+                goto FillImageThreadExit;
             }
-            if (fseek(buffer->file, (long)entry->base, SEEK_SET))
+            if (FileSeekSet(buffer->file, entry->base))
             {
                 *returnStatus = 1;
-                return;
+                goto FillImageThreadExit;
             }
 
             if (fread(buffer->compressionBuffer, 1, nBytes, buffer->file) != nBytes)
             {
                 *returnStatus = 1;
-                return;
+                goto FillImageThreadExit;
             }
 
             if (libdeflate_deflate_decompress(buffer->decompressor, (const void *)buffer->compressionBuffer, nBytes, (void *)buffer->texture, Bytes_Per_Texture, NULL))
             {
                 *returnStatus = 1;
-                return;
+                goto FillImageThreadExit;
             }
             u08 *texture[2];
             texture[0] = buffer->texture;
@@ -2118,7 +2145,7 @@ FillImage_Thread(void *in)
                     if ((bc4BlockData + 8) > (buffer->texture + Bytes_Per_Texture))
                     {
                         *returnStatus = 1;
-                        return;
+                        goto FillImageThreadExit;
                     }
 
                     bc4_block bc4Block;
@@ -2157,7 +2184,7 @@ FillImage_Thread(void *in)
                                 if (pixIdx >= higherBufferPixels)
                                 {
                                     *returnStatus = 1;
-                                    return;
+                                    goto FillImageThreadExit;
                                 }
                                 image[0][(im_y * lodPixelResolution0_x) + im_x] = val;
                             }
@@ -2186,7 +2213,7 @@ FillImage_Thread(void *in)
                         if ((bc4BlockData + 8) > (buffer->texture + Bytes_Per_Texture))
                         {
                             *returnStatus = 1;
-                            return;
+                            goto FillImageThreadExit;
                         }
 
                         bc4_block bc4Block;
@@ -2225,7 +2252,7 @@ FillImage_Thread(void *in)
                                     if (pixIdx >= lowerBufferPixels)
                                     {
                                         *returnStatus = 1;
-                                        return;
+                                        goto FillImageThreadExit;
                                     }
                                     image[1][(im_y * lodPixelResolution1_x) + im_x] = val;
                                 }
@@ -2244,7 +2271,8 @@ FillImage_Thread(void *in)
         textureIm_x[0] = 0;
         textureIm_x[1] = 0;
     }
-    
+
+FillImageThreadExit:
     AddTextureBufferToQueue(Texture_Buffer_Queue, buffer);
 }
 
@@ -4209,7 +4237,7 @@ MainArgs
             /* Each iteration: one pstm segment (magic, header, texture blocks); nextSegmentOffset = end of segment. */
             while (Number_Of_Map_File_Layers < Max_Map_File_Layers)
             {
-                if (fseek(file, (long)nextSegmentOffset, SEEK_SET))
+                if (FileSeekSet(file, nextSegmentOffset))
                 {
                     if (!Number_Of_Map_File_Layers)
                     {
@@ -4523,7 +4551,15 @@ MainArgs
 
                 PrintStatus("Indexing file segment at offset %llu...", (unsigned long long)segmentStart);
                 /* Texture bases are absolute file offsets (segmentStart + header + per-block payload). */
-                u32 currLocation = (u32)(segmentStart + sizeof(magic) + 8 + nBytesHeaderComp);
+                u64 currLocation = segmentStart + sizeof(magic) + 8 + (u64)nBytesHeaderComp;
+                if (currLocation < segmentStart)
+                {
+                    PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
+                    returnCode = EXIT_FAILURE;
+                    fclose(file);
+                    file = 0;
+                    goto closeFileAndExit;
+                }
                 ForLoop(numberOfTextureBlocks)
                 {
                     file_atlas_entry *entry = layerInfo->atlas + index;
@@ -4553,13 +4589,29 @@ MainArgs
                         goto closeFileAndExit;
                     }
                     currLocation += 4;
+                    if (currLocation < 4)
+                    {
+                        PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
+                    }
                     entry->base = currLocation;
                     entry->nBytes = nBytes;
-                    currLocation += nBytes;
+                    currLocation += (u64)nBytes;
+                    if (currLocation < (u64)nBytes)
+                    {
+                        PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
+                    }
                 }
 
                 ++Number_Of_Map_File_Layers;
-                nextSegmentOffset = (u64)ftell(file);
+                nextSegmentOffset = FileTell(file);
             }
 
             if (!Number_Of_Map_File_Layers)
