@@ -1867,6 +1867,7 @@ RemapBufferToCustomOrder(u08 *buffer, u32 res_x, u32 res_y)
         }
     }
     for (u32 i = 0; i < nPix; ++i) buffer[i] = temp[i];
+    FreeLastPush(Working_Set);
 }
 
 struct
