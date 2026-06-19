@@ -60,6 +60,8 @@ InitialiseSingleTextureBufferQueue(single_texture_buffer_queue *queue)
 {
     InitialiseMutex(queue->rwMutex);
     queue->queueLength = 0;
+    queue->front = 0;
+    queue->rear = 0;
 }
 
 global_function
@@ -86,9 +88,10 @@ InitialiseTextureBufferQueue(memory_arena *arena, texture_buffer_queue *queue, u
     queue->queues = PushArrayP(arena, single_texture_buffer_queue *, Number_Of_Texture_Buffer_Queues);
     if (!queue->queues)
     {
-        *returnMessageIndex = Texture_Load_Queue_Decompress_Error_Message_Index;
+        *returnMessageIndex = Texture_Load_Queue_Out_Of_Memory_Error_Message_Index;
         return 1;
     }
+    memset((void *)queue->queues, 0, sizeof(single_texture_buffer_queue *) * Number_Of_Texture_Buffer_Queues);
     queue->index = 0;
     u32 nAdded = 0;
     u32 nFileHandles = 0;
@@ -98,7 +101,7 @@ InitialiseTextureBufferQueue(memory_arena *arena, texture_buffer_queue *queue, u
         queue->queues[index] = PushStructP(arena, single_texture_buffer_queue);
         if (!queue->queues[index])
         {
-            *returnMessageIndex = Texture_Load_Queue_Decompress_Error_Message_Index;
+            *returnMessageIndex = Texture_Load_Queue_Out_Of_Memory_Error_Message_Index;
             return 1;
         }
         InitialiseSingleTextureBufferQueue(queue->queues[index]);
@@ -108,14 +111,14 @@ InitialiseTextureBufferQueue(memory_arena *arena, texture_buffer_queue *queue, u
             texture_buffer *buffer = PushStructP(arena, texture_buffer);
             if (!buffer)
             {
-                *returnMessageIndex = Texture_Load_Queue_Decompress_Error_Message_Index;
+                *returnMessageIndex = Texture_Load_Queue_Out_Of_Memory_Error_Message_Index;
                 return 1;
             }
             buffer->texture = PushArrayP(arena, u08, nBytesForTextureBuffer);
             buffer->compressionBuffer = PushArrayP(arena, u08, nBytesForTextureBuffer + Compression_Header_Size);
             if (!buffer->texture || !buffer->compressionBuffer)
             {
-                *returnMessageIndex = Texture_Load_Queue_Decompress_Error_Message_Index;
+                *returnMessageIndex = Texture_Load_Queue_Out_Of_Memory_Error_Message_Index;
                 return 1;
             }
             buffer->decompressor = libdeflate_alloc_decompressor();

@@ -485,19 +485,23 @@ Messages[] =
     "Could not decompress texture from disk",
     "Error writing image",
     "Texture load queue: could not allocate memory for libdeflate decompressors",
+    "Texture load queue: out of memory",
     "Texture load queue: could not open input file",
     "__error / warning divide",
-    "Texel range too small"
+    "Texel range too small",
+    "LOD buffer extent too small for texel range"
 };
 
 #define Texture_Decompress_Error_Message_Index 0
 #define Image_Write_Error_Message_Index 1
 #define Texture_Load_Queue_Decompress_Error_Message_Index 2
-#define Texture_Load_Queue_File_Handle_Error_Message_Index 3
+#define Texture_Load_Queue_Out_Of_Memory_Error_Message_Index 3
+#define Texture_Load_Queue_File_Handle_Error_Message_Index 4
 
-#define Error_Warning_Divide_Message_Index_ 4
+#define Error_Warning_Divide_Message_Index_ 5
 
-#define Texel_Range_Too_Small_Error_Message_Index 5
+#define Texel_Range_Too_Small_Error_Message_Index 6
+#define Lod_Buffer_Extent_Too_Small_Error_Message_Index 7
 
 #include "TextureLoadQueue.cpp"
 
@@ -1775,14 +1779,28 @@ FileSeekSet(FILE *file, u64 offset)
 }
 
 global_function
-u64
-FileTell(FILE *file)
+u32
+FileSeekCur(FILE *file, u64 offset)
 {
 #ifdef _WIN32
-    return((u64)_ftelli64(file));
+    return(_fseeki64(file, (__int64)offset, SEEK_CUR) != 0);
 #else
-    return((u64)ftello(file));
+    return(fseeko(file, (off_t)offset, SEEK_CUR) != 0);
 #endif
+}
+
+global_function
+u32
+FileTell(FILE *file, u64 *offset)
+{
+#ifdef _WIN32
+    __int64 pos = _ftelli64(file);
+#else
+    off_t pos = ftello(file);
+#endif
+    if (pos < 0) return 1;
+    *offset = (u64)pos;
+    return 0;
 }
 
 struct
@@ -1873,7 +1891,7 @@ global_function
 void
 RemapBufferToCustomOrder(u08 *buffer, u32 res_x, u32 res_y)
 {
-    if (!Custom_Order_Info) return;
+    if (!Custom_Order_Info || !res_x || !res_y) return;
     custom_order_info *o = Custom_Order_Info;
     u32 nPix = res_x * res_y;
     u08 *temp = (u08 *)PushArray(Working_Set, u08, nPix);
@@ -3326,11 +3344,17 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
         fillTwoImageBuffers = 0;
     }
 
-    if (!lodPixelResolution_x[0] || !lodPixelResolution_y[0] ||
-        lodPixelResolution_x[0] > Output_Buffer->lodBufferExtent ||
-        lodPixelResolution_y[0] > Output_Buffer->lodBufferExtent)
+    if (!lodPixelResolution_x[0] || !lodPixelResolution_y[0])
     {
         *returnMessageIndex = Texel_Range_Too_Small_Error_Message_Index;
+        returnValue = 1;
+        goto FillImageExit;
+    }
+
+    if (lodPixelResolution_x[0] > Output_Buffer->lodBufferExtent ||
+        lodPixelResolution_y[0] > Output_Buffer->lodBufferExtent)
+    {
+        *returnMessageIndex = Lod_Buffer_Extent_Too_Small_Error_Message_Index;
         returnValue = 1;
         goto FillImageExit;
     }
@@ -4447,7 +4471,9 @@ MainArgs
                 u16 mapq_layer_index_meta = 0;
                 u16 number_of_mapq_layers_meta = 1;
                 /* Optional MAPQ layer metadata (PretextMap multi-layer output). */
-                if (((u32)(nBytesHeader - (u32)(walk - headerBlob)) >= MapQ_Layer_Header_Extension_Size) &&
+                u32 headerConsumed = (u32)(walk - headerBlob);
+                u32 headerRemaining = (headerConsumed <= nBytesHeader) ? (nBytesHeader - headerConsumed) : 0;
+                if (headerRemaining >= MapQ_Layer_Header_Extension_Size &&
                     walk[0] == 'l' && walk[1] == 'a' && walk[2] == 'y' && walk[3] == 'r')
                 {
                     u08 *ex = walk + 4;
@@ -4580,7 +4606,7 @@ MainArgs
                         file = 0;
                         goto closeFileAndExit;
                     }
-                    if (fseek(file, (long)nBytes, SEEK_CUR))
+                    if (FileSeekCur(file, nBytes))
                     {
                         PrintError("Could not skip texture data in '%s'", inputFileName);
                         returnCode = EXIT_FAILURE;
@@ -4588,30 +4614,43 @@ MainArgs
                         file = 0;
                         goto closeFileAndExit;
                     }
-                    currLocation += 4;
-                    if (currLocation < 4)
                     {
-                        PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
-                        returnCode = EXIT_FAILURE;
-                        fclose(file);
-                        file = 0;
-                        goto closeFileAndExit;
+                        u64 prevLocation = currLocation;
+                        currLocation += 4;
+                        if (currLocation < prevLocation)
+                        {
+                            PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
+                            returnCode = EXIT_FAILURE;
+                            fclose(file);
+                            file = 0;
+                            goto closeFileAndExit;
+                        }
                     }
                     entry->base = currLocation;
                     entry->nBytes = nBytes;
-                    currLocation += (u64)nBytes;
-                    if (currLocation < (u64)nBytes)
                     {
-                        PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
-                        returnCode = EXIT_FAILURE;
-                        fclose(file);
-                        file = 0;
-                        goto closeFileAndExit;
+                        u64 prevLocation = currLocation;
+                        currLocation += (u64)nBytes;
+                        if (currLocation < prevLocation)
+                        {
+                            PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
+                            returnCode = EXIT_FAILURE;
+                            fclose(file);
+                            file = 0;
+                            goto closeFileAndExit;
+                        }
                     }
                 }
 
                 ++Number_Of_Map_File_Layers;
-                nextSegmentOffset = FileTell(file);
+                if (FileTell(file, &nextSegmentOffset))
+                {
+                    PrintError("Could not read file position in '%s'", inputFileName);
+                    returnCode = EXIT_FAILURE;
+                    fclose(file);
+                    file = 0;
+                    goto closeFileAndExit;
+                }
             }
 
             if (!Number_Of_Map_File_Layers)

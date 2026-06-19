@@ -337,15 +337,27 @@ CreateMemoryArena_(memory_arena *arena, u64 size, u32 alignment_pow2 = Default_M
    linkSize += GetAlignmentPadding(linkSize, alignment_pow2);
    u64 realSize = size + linkSize;
 
+   arena->currentSize = 0;
+   arena->maxSize = size;
+   arena->active = 0;
+   arena->next = 0;
+   arena->base = 0;
+
 #ifndef _WIN32
-   posix_memalign((void **)&arena->base, Pow2(alignment_pow2), realSize);
+   if (posix_memalign((void **)&arena->base, Pow2(alignment_pow2), realSize) != 0)
+   {
+       arena->base = 0;
+       return;
+   }
 #else
 #include <memoryapi.h>
    (void)alignment_pow2;
    arena->base = (u08 *)VirtualAlloc(NULL, realSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+   if (!arena->base)
+   {
+       return;
+   }
 #endif
-   arena->currentSize = 0;
-   arena->maxSize = size;
 #pragma clang diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"	
    arena->next = (memory_arena *)arena->base;
