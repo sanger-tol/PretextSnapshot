@@ -303,6 +303,12 @@ Options:
 	--printSequenceNames:	Prints a list of the individual sequence names in the map, in order of appearance.
 			        Can only be used with the -m/--map option.
 
+	--mapqThreshold n:	When the map contains multiple concatenated MAPQ layers, pick the layer whose stored
+			        MAPQ threshold matches n (see the map file metadata). Cannot be used with --mapqLayer.
+
+	--mapqLayer k:		When the map contains multiple concatenated MAPQ layers, pick the k-th segment (0-based).
+			        Cannot be used with --mapqThreshold.
+
 	--verbose vrbs:		Verbosity level, one of: "3"(default) for error, warning and status messages.
 							 "2" for error and warning messages.
 							 "1" for error messages.
@@ -479,19 +485,23 @@ Messages[] =
     "Could not decompress texture from disk",
     "Error writing image",
     "Texture load queue: could not allocate memory for libdeflate decompressors",
+    "Texture load queue: out of memory",
     "Texture load queue: could not open input file",
     "__error / warning divide",
-    "Texel range too small"
+    "Texel range too small",
+    "LOD buffer extent too small for texel range"
 };
 
 #define Texture_Decompress_Error_Message_Index 0
 #define Image_Write_Error_Message_Index 1
 #define Texture_Load_Queue_Decompress_Error_Message_Index 2
-#define Texture_Load_Queue_File_Handle_Error_Message_Index 3
+#define Texture_Load_Queue_Out_Of_Memory_Error_Message_Index 3
+#define Texture_Load_Queue_File_Handle_Error_Message_Index 4
 
-#define Error_Warning_Divide_Message_Index_ 4
+#define Error_Warning_Divide_Message_Index_ 5
 
-#define Texel_Range_Too_Small_Error_Message_Index 5
+#define Texel_Range_Too_Small_Error_Message_Index 6
+#define Lod_Buffer_Extent_Too_Small_Error_Message_Index 7
 
 #include "TextureLoadQueue.cpp"
 
@@ -623,6 +633,10 @@ ResizeImage(u08 *source, u32 sourceWidth, u32 sourceHeight, u08 *destination, u3
 global_variable
 memory_arena
 STB_Memory_Arena;
+
+global_variable
+memory_arena
+Texture_Queue_Arena;
 
 global_variable
 libdeflate_compressor *
@@ -798,6 +812,10 @@ global_variable
 u32
 Bytes_Per_Texture;
 
+global_variable
+u32
+Number_Of_Texture_Blocks;
+
 #define NumOutputImageBufferGridFillFlags(buffer) (((buffer->outputResolution * buffer->outputResolution) + 7) >> 3)
 
 global_function
@@ -835,6 +853,7 @@ output_buffer
     u08 *lodHigherBuffer;
     u08 *lodHigherResizeBuffer;
     u32 outputResolution;
+    u32 lodBufferExtent;
     u32 outputBufferPtr;
 };
 
@@ -1324,6 +1343,22 @@ custom_order_info
 global_variable
 custom_order_info *Custom_Order_Info = 0;
 
+/* Half-open map texel range [mapStart, mapEnd) for one contig, using cumulative fractions (matches Pretext map layout). */
+global_function
+void
+ContigMapTexelRange(contig *c, u32 nTexels, u32 *mapStart, u32 *mapEnd)
+{
+    f64 startFrac = (f64)c->previousCumulativeLength;
+    f64 endFrac = startFrac + (f64)c->fractionalLength;
+    startFrac = Max(0.0, Min(1.0, startFrac));
+    endFrac = Max(startFrac, Min(1.0, endFrac));
+    *mapStart = (u32)(startFrac * (f64)nTexels);
+    *mapEnd = (u32)(endFrac * (f64)nTexels);
+    if (*mapStart > nTexels) *mapStart = nTexels;
+    if (*mapEnd > nTexels) *mapEnd = nTexels;
+    if (*mapEnd < *mapStart) *mapEnd = *mapStart;
+}
+
 global_function
 u32
 ReadOrderFileCustomOrder(const char *orderFilePath)
@@ -1372,15 +1407,31 @@ ReadOrderFileCustomOrder(const char *orderFilePath)
     u64 *customCumulativeTexels = (u64 *)PushArray(Working_Set, u64, nIndices + 1);
     customCumulativeTexels[0] = 0;
     u32 minMapTexel = nTexels, maxMapTexel = 0;
+    f64 customFracSum = 0;
+    /* Custom-order axis: assign texels by cumulative fraction along the order file, not per-contig floor.
+       Per-contig (u32)(frac * nTexels) loses one texel at a time; thousands of small scaffolds shrink the axis. */
     for (u32 k = 0; k < nIndices; ++k)
     {
         contig *c = Map_Properties->contigs + indices[k];
-        u32 segTexels = (u32)((f64)c->fractionalLength * (f64)nTexels);
-        customCumulativeTexels[k + 1] = customCumulativeTexels[k] + segTexels;
-        u32 mapStart = (u32)((f64)c->previousCumulativeLength * (f64)nTexels);
-        u32 mapEnd = mapStart + segTexels;
+        customFracSum += (f64)c->fractionalLength;
+        u32 customEnd = (u32)(customFracSum * (f64)nTexels);
+        if (customEnd > nTexels) customEnd = nTexels;
+        if (customEnd < (u32)customCumulativeTexels[k]) customEnd = (u32)customCumulativeTexels[k];
+        customCumulativeTexels[k + 1] = customEnd;
+
+        u32 mapStart, mapEnd;
+        ContigMapTexelRange(c, nTexels, &mapStart, &mapEnd);
         if (mapStart < minMapTexel) minMapTexel = mapStart;
         if (mapEnd > maxMapTexel) maxMapTexel = mapEnd;
+    }
+    {
+        /* Any remainder from cumulative floor goes on the last segment so totalCustomTexels matches the genome fraction sum. */
+        u32 expectedTotalCustomTexels = (u32)(customFracSum * (f64)nTexels + 0.5);
+        if (expectedTotalCustomTexels > nTexels) expectedTotalCustomTexels = nTexels;
+        if ((u32)customCumulativeTexels[nIndices] < expectedTotalCustomTexels)
+        {
+            customCumulativeTexels[nIndices] = expectedTotalCustomTexels;
+        }
     }
     u32 totalCustomTexels = (u32)customCumulativeTexels[nIndices];
     u32 mapTexelRange = maxMapTexel - minMapTexel;
@@ -1716,16 +1767,75 @@ ProcessColourMapSelection(u32 *returnValue, u08 *string)
     return(returnResult);
 }
 
+global_function
+u32
+FileSeekSet(FILE *file, u64 offset)
+{
+#ifdef _WIN32
+    return(_fseeki64(file, (__int64)offset, SEEK_SET) != 0);
+#else
+    return(fseeko(file, (off_t)offset, SEEK_SET) != 0);
+#endif
+}
+
+global_function
+u32
+FileSeekCur(FILE *file, u64 offset)
+{
+#ifdef _WIN32
+    return(_fseeki64(file, (__int64)offset, SEEK_CUR) != 0);
+#else
+    return(fseeko(file, (off_t)offset, SEEK_CUR) != 0);
+#endif
+}
+
+global_function
+u32
+FileTell(FILE *file, u64 *offset)
+{
+#ifdef _WIN32
+    __int64 pos = _ftelli64(file);
+#else
+    off_t pos = ftello(file);
+#endif
+    if (pos < 0) return 1;
+    *offset = (u64)pos;
+    return 0;
+}
+
 struct
 file_atlas_entry
 {
-    u32 base;
+    u64 base;
     u32 nBytes;
 };
 
 global_variable
 file_atlas_entry *
 File_Atlas;
+
+/* Multi-MAPQ .pretext files concatenate several pstm segments; each segment has its own header and texture atlas. */
+#define Max_Map_File_Layers 32
+#define MapQ_Layer_Header_Extension_Size 18  /* "layr" + reserved(2) + layer index/count + MAPQ threshold + prefilter */
+
+struct
+pretext_mapq_layer_info
+{
+    file_atlas_entry *atlas;
+    u64 segment_file_offset;
+    u32 mapq_threshold;
+    u32 min_mapq_prefilter;
+    u16 mapq_layer_index;
+    u16 number_of_mapq_layers;
+};
+
+global_variable
+pretext_mapq_layer_info *
+Map_File_Layers;
+
+global_variable
+u32
+Number_Of_Map_File_Layers;
 
 global_function
 u32
@@ -1763,42 +1873,47 @@ CustomTexelToMapTexel(u32 customTexel)
         if (customTexel >= segStart && customTexel < segEnd)
         {
             contig *c = Map_Properties->contigs + o->orderIndices[k];
-            u32 mapStart = (u32)((f64)c->previousCumulativeLength * (f64)nTexels);
+            u32 mapStart, mapEnd;
+            ContigMapTexelRange(c, nTexels, &mapStart, &mapEnd);  /* true span in native map coordinates */
             u64 segLen = segEnd - segStart;
             if (segLen == 0) return mapStart;
             f64 frac = (f64)(customTexel - segStart) / (f64)segLen;
-            u32 mapLen = (u32)((f64)c->fractionalLength * (f64)nTexels);
+            u32 mapLen = mapEnd - mapStart;
+            if (mapLen == 0) return mapStart;
             return mapStart + (u32)(frac * (f64)mapLen);
         }
     }
     return 0;
 }
 
+/* Resample the native-map crop (lodHigherResizeBuffer) into custom-order axes via customTexel <-> mapTexel mapping. */
 global_function
 void
-RemapBufferToCustomOrder(u08 *buffer, u32 res)
+RemapBufferToCustomOrder(u08 *buffer, u32 res_x, u32 res_y)
 {
-    if (!Custom_Order_Info) return;
+    if (!Custom_Order_Info || !res_x || !res_y) return;
     custom_order_info *o = Custom_Order_Info;
-    u08 *temp = (u08 *)PushArray(Working_Set, u08, res * res);
-    for (u32 iy = 0; iy < res; ++iy)
+    u32 nPix = res_x * res_y;
+    u08 *temp = (u08 *)PushArray(Working_Set, u08, nPix);
+    for (u32 iy = 0; iy < res_y; ++iy)
     {
-        for (u32 ix = 0; ix < res; ++ix)
+        for (u32 ix = 0; ix < res_x; ++ix)
         {
-            u32 customTexel_x = (u32)((f64)ix * (f64)o->totalCustomTexels / (f64)res);
-            u32 customTexel_y = (u32)((f64)iy * (f64)o->totalCustomTexels / (f64)res);
+            u32 customTexel_x = (u32)((f64)ix * (f64)o->totalCustomTexels / (f64)res_x);
+            u32 customTexel_y = (u32)((f64)iy * (f64)o->totalCustomTexels / (f64)res_y);
             if (customTexel_x >= o->totalCustomTexels) customTexel_x = o->totalCustomTexels - 1;
             if (customTexel_y >= o->totalCustomTexels) customTexel_y = o->totalCustomTexels - 1;
             u32 mapTexel_x = CustomTexelToMapTexel(customTexel_x);
             u32 mapTexel_y = CustomTexelToMapTexel(customTexel_y);
-            u32 srcX = (u32)((f64)(mapTexel_x - o->minMapTexel) * (f64)res / (f64)o->mapTexelRange);
-            u32 srcY = (u32)((f64)(mapTexel_y - o->minMapTexel) * (f64)res / (f64)o->mapTexelRange);
-            if (srcX >= res) srcX = res - 1;
-            if (srcY >= res) srcY = res - 1;
-            temp[iy * res + ix] = buffer[srcY * res + srcX];
+            u32 srcX = (u32)((f64)(mapTexel_x - o->minMapTexel) * (f64)res_x / (f64)o->mapTexelRange);
+            u32 srcY = (u32)((f64)(mapTexel_y - o->minMapTexel) * (f64)res_y / (f64)o->mapTexelRange);
+            if (srcX >= res_x) srcX = res_x - 1;
+            if (srcY >= res_y) srcY = res_y - 1;
+            temp[iy * res_x + ix] = buffer[srcY * res_x + srcX];
         }
     }
-    for (u32 i = 0; i < res * res; ++i) buffer[i] = temp[i];
+    for (u32 i = 0; i < nPix; ++i) buffer[i] = temp[i];
+    FreeLastPush(Working_Set);
 }
 
 struct
@@ -1887,8 +2002,21 @@ FillImage_Thread(void *in)
     
     u32 textureStart_x = (texelLodStart0_x << lodLevel) / Map_Properties->textureResolution;
     u32 textureStart_y = (texelLodStart0_y << lodLevel) / Map_Properties->textureResolution;
-    u32 textureEnd_x = (((texelLodStart0_x + texelLodRange0_x - 1) << lodLevel) / Map_Properties->textureResolution) + 1;
-    u32 textureEnd_y = (((texelLodStart0_y + texelLodRange0_y - 1) << lodLevel) / Map_Properties->textureResolution) + 1;
+    u32 textureEnd_x = texelLodRange0_x
+        ? ((((texelLodStart0_x + texelLodRange0_x - 1) << lodLevel) / Map_Properties->textureResolution) + 1)
+        : textureStart_x;
+    u32 textureEnd_y = texelLodRange0_y
+        ? ((((texelLodStart0_y + texelLodRange0_y - 1) << lodLevel) / Map_Properties->textureResolution) + 1)
+        : textureStart_y;
+
+    {
+        u32 maxTex = Map_Properties->numberOfTextures1D;
+        if (textureEnd_x > maxTex) textureEnd_x = maxTex;
+        if (textureEnd_y > maxTex) textureEnd_y = maxTex;
+    }
+
+    u32 higherBufferPixels = 4 * Output_Buffer->lodBufferExtent * Output_Buffer->lodBufferExtent;
+    u32 lowerBufferPixels = Output_Buffer->lodBufferExtent * Output_Buffer->lodBufferExtent;
 
     auto texture2DTo1DIndex = [](u32 x, u32 y)->u32
     {
@@ -1933,16 +2061,35 @@ FillImage_Thread(void *in)
 
             u32 linearTextureIndex = texture2DTo1DIndex(tex_x, tex_y);
 
+            if (linearTextureIndex >= Number_Of_Texture_Blocks)
+            {
+                *returnStatus = 1;
+                goto FillImageThreadExit;
+            }
+
             file_atlas_entry *entry = File_Atlas + linearTextureIndex;
             u32 nBytes = entry->nBytes;
-            fseek(buffer->file, entry->base, SEEK_SET);
+            if (!nBytes || nBytes > (Bytes_Per_Texture + Compression_Header_Size))
+            {
+                *returnStatus = 1;
+                goto FillImageThreadExit;
+            }
+            if (FileSeekSet(buffer->file, entry->base))
+            {
+                *returnStatus = 1;
+                goto FillImageThreadExit;
+            }
 
-            fread(buffer->compressionBuffer, 1, nBytes, buffer->file);
+            if (fread(buffer->compressionBuffer, 1, nBytes, buffer->file) != nBytes)
+            {
+                *returnStatus = 1;
+                goto FillImageThreadExit;
+            }
 
             if (libdeflate_deflate_decompress(buffer->decompressor, (const void *)buffer->compressionBuffer, nBytes, (void *)buffer->texture, Bytes_Per_Texture, NULL))
             {
                 *returnStatus = 1;
-                return;
+                goto FillImageThreadExit;
             }
             u08 *texture[2];
             texture[0] = buffer->texture;
@@ -1981,11 +2128,19 @@ FillImage_Thread(void *in)
             bc4BlockStart_y[0] = (textureCoordStart_y[0] - textureBlockStart_y[0]) >> 2;
             bc4BlockStart_y[1] = (textureCoordStart_y[1] - textureBlockStart_y[1]) >> 2;
             u32 bc4BlockEnd_x[2];
-            bc4BlockEnd_x[0] = textureCoordEnd_x[0] == textureBlockStart_x[0] ? 0 : (((textureCoordEnd_x[0] - textureBlockStart_x[0] - 1) >> 2) + 1);
-            bc4BlockEnd_x[1] = textureCoordEnd_x[1] == textureBlockStart_x[1] ? 0 : (((textureCoordEnd_x[1] - textureBlockStart_x[1] - 1) >> 2) + 1);
+            bc4BlockEnd_x[0] = (textureCoordEnd_x[0] <= textureBlockStart_x[0] || textureCoordEnd_x[0] <= textureCoordStart_x[0])
+                ? bc4BlockStart_x[0]
+                : (((textureCoordEnd_x[0] - textureBlockStart_x[0] - 1) >> 2) + 1);
+            bc4BlockEnd_x[1] = (textureCoordEnd_x[1] <= textureBlockStart_x[1] || textureCoordEnd_x[1] <= textureCoordStart_x[1])
+                ? bc4BlockStart_x[1]
+                : (((textureCoordEnd_x[1] - textureBlockStart_x[1] - 1) >> 2) + 1);
             u32 bc4BlockEnd_y[2];
-            bc4BlockEnd_y[0] = textureCoordEnd_y[0] == textureBlockStart_y[0] ? 0 : (((textureCoordEnd_y[0] - textureBlockStart_y[0] - 1) >> 2) + 1);
-            bc4BlockEnd_y[1] = textureCoordEnd_y[1] == textureBlockStart_y[1] ? 0 : (((textureCoordEnd_y[1] - textureBlockStart_y[1] - 1) >> 2) + 1);
+            bc4BlockEnd_y[0] = (textureCoordEnd_y[0] <= textureBlockStart_y[0] || textureCoordEnd_y[0] <= textureCoordStart_y[0])
+                ? bc4BlockStart_y[0]
+                : (((textureCoordEnd_y[0] - textureBlockStart_y[0] - 1) >> 2) + 1);
+            bc4BlockEnd_y[1] = (textureCoordEnd_y[1] <= textureBlockStart_y[1] || textureCoordEnd_y[1] <= textureCoordStart_y[1])
+                ? bc4BlockStart_y[1]
+                : (((textureCoordEnd_y[1] - textureBlockStart_y[1] - 1) >> 2) + 1);
             u32 bc4Size[2];
             bc4Size[0] = textureSize[0] >> 2;
             bc4Size[1] = textureSize[1] >> 2;
@@ -1999,7 +2154,17 @@ FillImage_Thread(void *in)
                         ++bc4_x )
                 {
                     u32 bc4Index = lowerTriangular ? ((bc4_x * bc4Size[0]) + bc4_y) : ((bc4_y * bc4Size[0]) + bc4_x);
+                    u32 maxBc4Index = lowerTriangular ? ((bc4Size[0] * (bc4Size[0] + 1)) >> 1) : (bc4Size[0] * bc4Size[0]);
+                    if (bc4Index >= maxBc4Index)
+                    {
+                        continue;
+                    }
                     u08 *bc4BlockData = texture[0] + (bc4Index << 3);
+                    if ((bc4BlockData + 8) > (buffer->texture + Bytes_Per_Texture))
+                    {
+                        *returnStatus = 1;
+                        goto FillImageThreadExit;
+                    }
 
                     bc4_block bc4Block;
                     FillBC4Block(&bc4Block, bc4BlockData);
@@ -2032,7 +2197,15 @@ FillImage_Thread(void *in)
 
                             u08 val = GetBC4ValueAt(&bc4Block, (u08)bc4Index_x, (u08)bc4Index_y);
 
-                            image[0][(im_y * lodPixelResolution0_x) + im_x] = val;
+                            {
+                                u32 pixIdx = im0Offset + (im_y * lodPixelResolution0_x) + im_x;
+                                if (pixIdx >= higherBufferPixels)
+                                {
+                                    *returnStatus = 1;
+                                    goto FillImageThreadExit;
+                                }
+                                image[0][(im_y * lodPixelResolution0_x) + im_x] = val;
+                            }
                         }
                     }
                 }
@@ -2049,7 +2222,17 @@ FillImage_Thread(void *in)
                             ++bc4_x )
                     {
                         u32 bc4Index = lowerTriangular ? ((bc4_x * bc4Size[1]) + bc4_y) : ((bc4_y * bc4Size[1]) + bc4_x);
+                        u32 maxBc4Index = lowerTriangular ? ((bc4Size[1] * (bc4Size[1] + 1)) >> 1) : (bc4Size[1] * bc4Size[1]);
+                        if (bc4Index >= maxBc4Index)
+                        {
+                            continue;
+                        }
                         u08 *bc4BlockData = texture[1] + (bc4Index << 3);
+                        if ((bc4BlockData + 8) > (buffer->texture + Bytes_Per_Texture))
+                        {
+                            *returnStatus = 1;
+                            goto FillImageThreadExit;
+                        }
 
                         bc4_block bc4Block;
                         FillBC4Block(&bc4Block, bc4BlockData);
@@ -2082,7 +2265,15 @@ FillImage_Thread(void *in)
 
                                 u08 val = GetBC4ValueAt(&bc4Block, (u08)bc4Index_x, (u08)bc4Index_y);
 
-                                image[1][(im_y * lodPixelResolution1_x) + im_x] = val;
+                                {
+                                    u32 pixIdx = im1Offset + (im_y * lodPixelResolution1_x) + im_x;
+                                    if (pixIdx >= lowerBufferPixels)
+                                    {
+                                        *returnStatus = 1;
+                                        goto FillImageThreadExit;
+                                    }
+                                    image[1][(im_y * lodPixelResolution1_x) + im_x] = val;
+                                }
                             }
                         }
                     }
@@ -2098,7 +2289,8 @@ FillImage_Thread(void *in)
         textureIm_x[0] = 0;
         textureIm_x[1] = 0;
     }
-    
+
+FillImageThreadExit:
     AddTextureBufferToQueue(Texture_Buffer_Queue, buffer);
 }
 
@@ -2702,34 +2894,40 @@ FillInGrid_Thread(void *in)
                             {
 #ifdef UsingAVX
                                 AlphaBlendGrid_8Wide(pixelData);
-                                u32 skipBackIndex = 0;
-                                u32 backFillCount = 0;
-                                while (backFillCount < dataSize)
+                                u32 skipBackIndex = 0, backFillCount = 0;
+                                while (backFillCount < dataSize && skipBackIndex < range_x)
                                 {
-                                    if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                    ++skipBackIndex;
+                                    if (skipBackIndex > index) break;
+                                    u32 colIdx = index - skipBackIndex;
+                                    if (colIdx < start_x) break;
+                                    if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                                     {
-                                        u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
+                                        u32 idx = lineariseImageIndex(colIdx, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
-                                        FillPixelBitFlag(index - skipBackIndex, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                                        FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                                     }
                                 }
 #else
                                 AlphaBlendGrid_4Wide(pixelData);
-                                u32 skipBackIndex = 0;
-                                u32 backFillCount = 0;
-                                while (backFillCount < dataSize)
+                                u32 skipBackIndex = 0, backFillCount = 0;
+                                while (backFillCount < dataSize && skipBackIndex < range_x)
                                 {
-                                    if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                                    ++skipBackIndex;
+                                    if (skipBackIndex > index) break;
+                                    u32 colIdx = index - skipBackIndex;
+                                    if (colIdx < start_x) break;
+                                    if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                                     {
-                                        u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
+                                        u32 idx = lineariseImageIndex(colIdx, pixel);
                                         u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
                                         GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
-                                        FillPixelBitFlag(index - skipBackIndex, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                                        FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                                     }
                                 }
 #endif
@@ -2751,47 +2949,57 @@ FillInGrid_Thread(void *in)
                         }
                     }
 
+                    if (skipCount > 0)
+                    {
 #ifdef UsingAVX
                     u32 backCount = countMod + 1;
                     AlphaBlendGrid_8Wide(pixelData);
-                    u32 skipBackIndex = 0;
-                    u32 backFillCount = 0;
-                    while (backFillCount < backCount)
+                    u32 skipBackIndex = 0, backFillCount = 0;
+                    while (backFillCount < backCount && skipBackIndex <= range_x)
                     {
-                        if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        ++skipBackIndex;
+                        if (skipBackIndex > index) break;
+                        u32 colIdx = index - skipBackIndex;
+                        if (colIdx < start_x) break;
+                        if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
-                            u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
+                            u32 idx = lineariseImageIndex(colIdx, pixel);
                             u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
                             GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u64)0xff);
                             GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u64)0xff);
                             GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u64)0xff);
-                            FillPixelBitFlag(index - skipBackIndex, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                         }
                     }
 #else
                     u32 backCount = countMod + 1;
                     AlphaBlendGrid_4Wide(pixelData);
-                    u32 skipBackIndex = 0;
-                    u32 backFillCount = 0;
-                    while (backFillCount < backCount)
+                    u32 skipBackIndex = 0, backFillCount = 0;
+                    while (backFillCount < backCount && skipBackIndex <= range_x)
                     {
-                        if (!CheckPixelBitFlag(index - (++skipBackIndex), pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        ++skipBackIndex;
+                        if (skipBackIndex > index) break;
+                        u32 colIdx = index - skipBackIndex;
+                        if (colIdx < start_x) break;
+                        if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
-                            u32 idx = lineariseImageIndex(index - skipBackIndex, pixel);
+                            u32 idx = lineariseImageIndex(colIdx, pixel);
                             u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
                             GetCurrentOutputBuffer(Output_Buffer)[idx + 0] = (u08)((pixelData[0] >> backShiftIndex) & (u32)0xff);
                             GetCurrentOutputBuffer(Output_Buffer)[idx + 1] = (u08)((pixelData[1] >> backShiftIndex) & (u32)0xff);
                             GetCurrentOutputBuffer(Output_Buffer)[idx + 2] = (u08)((pixelData[2] >> backShiftIndex) & (u32)0xff);
-                            FillPixelBitFlag(index - skipBackIndex, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
+                            FillPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags);
                         }
                     }
 #endif
+                    }
                 }
             }
         }
     }
 }
 
+/* Sequence grid for --order snapshots: boundaries at customCumulativeTexels[k], not native map texels. */
 global_function
 void
 FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
@@ -2803,7 +3011,8 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
     auto lineariseImageIndex = [resolution_x](u32 x, u32 y)->u32 { return(3 * ((y * resolution_x) + x)); };
     u32 start_x = 0, range_x = resolution_x, start_y = 0, range_y = resolution_y;
 
-    for (u32 k = 1; k < o->nOrder; ++k)
+    /* k = 0: outer top/left; k = 1..nOrder-1: internal boundaries; k = nOrder: outer right/bottom */
+    for (u32 k = 0; k <= o->nOrder; ++k)
     {
         /* Horizontal lines first (same style as FillInGrid_Thread) */
         u32 pixelCentre = (u32)((f64)o->customCumulativeTexels[k] * (f64)resolution_y / (f64)o->totalCustomTexels);
@@ -2838,8 +3047,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                         while (backFillCount < dataSize && skipBackIndex < range_x)
                         {
                             ++skipBackIndex;
+                            if (skipBackIndex > index) break;
                             u32 colIdx = index - skipBackIndex;
-                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            if (colIdx < start_x) break;
+                            if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                             {
                                 u32 idx = lineariseImageIndex(colIdx, pixel);
                                 u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -2855,8 +3066,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                         while (backFillCount < dataSize && skipBackIndex < range_x)
                         {
                             ++skipBackIndex;
+                            if (skipBackIndex > index) break;
                             u32 colIdx = index - skipBackIndex;
-                            if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                            if (colIdx < start_x) break;
+                            if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                             {
                                 u32 idx = lineariseImageIndex(colIdx, pixel);
                                 u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -2892,8 +3105,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 while (backFillCount < backCount && skipBackIndex <= range_x)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > index) break;
                     u32 colIdx = index - skipBackIndex;
-                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    if (colIdx < start_x) break;
+                    if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
                         u32 idx = lineariseImageIndex(colIdx, pixel);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -2910,8 +3125,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 while (backFillCount < backCount && skipBackIndex <= range_x)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > index) break;
                     u32 colIdx = index - skipBackIndex;
-                    if (colIdx >= start_x && !CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    if (colIdx < start_x) break;
+                    if (!CheckPixelBitFlag(colIdx, pixel, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
                         u32 idx = lineariseImageIndex(colIdx, pixel);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -2958,8 +3175,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                     while (backFillCount < dataSize && skipBackIndex < range_y)
                     {
                         ++skipBackIndex;
+                        if (skipBackIndex > idx) break;
                         u32 rowIdx = idx - skipBackIndex;
-                        if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        if (rowIdx < start_y) break;
+                        if (!CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
                             u32 i = lineariseImageIndex(pixel, rowIdx);
                             u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -2975,8 +3194,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                     while (backFillCount < dataSize && skipBackIndex < range_y)
                     {
                         ++skipBackIndex;
+                        if (skipBackIndex > idx) break;
                         u32 rowIdx = idx - skipBackIndex;
-                        if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                        if (rowIdx < start_y) break;
+                        if (!CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                         {
                             u32 i = lineariseImageIndex(pixel, rowIdx);
                             u32 backShiftIndex = (dataSize - backFillCount++ - 1) << 3;
@@ -3011,8 +3232,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 while (backFillCount < backCount && skipBackIndex <= range_y)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > idx) break;
                     u32 rowIdx = idx - skipBackIndex;
-                    if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    if (rowIdx < start_y) break;
+                    if (!CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
                         u32 i = lineariseImageIndex(pixel, rowIdx);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -3029,8 +3252,10 @@ FillInGridCustomOrder(u32 resolution_x, u32 resolution_y)
                 while (backFillCount < backCount && skipBackIndex <= range_y)
                 {
                     ++skipBackIndex;
+                    if (skipBackIndex > idx) break;
                     u32 rowIdx = idx - skipBackIndex;
-                    if (rowIdx >= start_y && !CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
+                    if (rowIdx < start_y) break;
+                    if (!CheckPixelBitFlag(pixel, rowIdx, resolution_x, Output_Buffer->outputImageBufferGridFillFlags))
                     {
                         u32 i = lineariseImageIndex(pixel, rowIdx);
                         u32 backShiftIndex = (backCount - backFillCount++ - 1) << 3;
@@ -3053,6 +3278,25 @@ Min_Texels = 64;
 global_variable
 u32
 Colour_Map_Index = 5+3;
+
+/* LOD greyscale buffers must hold lodPixelResolution²; when mip level is capped, that can exceed 2× outputResolution. */
+global_function
+u32
+RequiredLodBufferExtent(u32 outputResolution, u32 texelRangeMax)
+{
+    u32 extent = Max(outputResolution, 1024);
+    if (!Map_Properties || texelRangeMax < 1)
+    {
+        return extent;
+    }
+
+    f32 texelsPerPixel = (f32)texelRangeMax / (f32)outputResolution;
+    f32 log2TexelsPerPixel = Max(0.0f, Log2(Max(1.0f, texelsPerPixel)));
+    u32 lodLevel = (u32)log2TexelsPerPixel;
+    lodLevel = Min(lodLevel, Map_Properties->numberOfMipMaps - 1);
+    u32 maxLodPix = ((texelRangeMax - 1) >> lodLevel) + 1;
+    return Max(extent, maxLodPix);
+}
 
 global_function
 u32
@@ -3095,6 +3339,25 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
     lodPixelResolution_y[1] = texelLodEnd_y[1] - texelLodStart_y[1];
     
     u32 fillTwoImageBuffers = lodLevel != (Map_Properties->numberOfMipMaps - 1);
+    if (fillTwoImageBuffers && (!lodPixelResolution_x[1] || !lodPixelResolution_y[1]))
+    {
+        fillTwoImageBuffers = 0;
+    }
+
+    if (!lodPixelResolution_x[0] || !lodPixelResolution_y[0])
+    {
+        *returnMessageIndex = Texel_Range_Too_Small_Error_Message_Index;
+        returnValue = 1;
+        goto FillImageExit;
+    }
+
+    if (lodPixelResolution_x[0] > Output_Buffer->lodBufferExtent ||
+        lodPixelResolution_y[0] > Output_Buffer->lodBufferExtent)
+    {
+        *returnMessageIndex = Lod_Buffer_Extent_Too_Small_Error_Message_Index;
+        returnValue = 1;
+        goto FillImageExit;
+    }
 
     if (texelRange_x < Min_Texels || texelRange_y < Min_Texels)
     {
@@ -3165,11 +3428,19 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
         data[3].texelLodStart0_x = texelLodStart_x[0];
         data[3].texelLodRange0_x = lodPixelResolution_x[0];
         data[3].texelLodStart0_y = data[2].texelLodStart0_y + data[2].texelLodRange0_y;
-        data[3].texelLodRange0_y = lodPixelResolution_y[0] - data[2].texelLodRange0_y - data[1].texelLodRange0_y - data[0].texelLodRange0_y;
+        {
+            u32 exclusiveEnd0_y = texelLodStart_y[0] + lodPixelResolution_y[0];
+            s64 rem0 = (s64)exclusiveEnd0_y - (s64)data[3].texelLodStart0_y;
+            data[3].texelLodRange0_y = rem0 > 0 ? (u32)rem0 : 0;
+        }
         data[3].texelLodStart1_x = texelLodStart_x[1];
         data[3].texelLodRange1_x = lodPixelResolution_x[1];
         data[3].texelLodStart1_y = data[2].texelLodStart1_y + data[2].texelLodRange1_y;
-        data[3].texelLodRange1_y = lodPixelResolution_y[1] - data[2].texelLodRange1_y - data[1].texelLodRange1_y - data[0].texelLodRange1_y;
+        {
+            u32 exclusiveEnd1_y = texelLodStart_y[1] + lodPixelResolution_y[1];
+            s64 rem1 = (s64)exclusiveEnd1_y - (s64)data[3].texelLodStart1_y;
+            data[3].texelLodRange1_y = rem1 > 0 ? (u32)rem1 : 0;
+        }
         data[3].lodLevel = lodLevel;
         data[3].fillTwoImageBuffers = fillTwoImageBuffers;
         data[3].lodPixelResolution0_x = lodPixelResolution_x[0];
@@ -3249,7 +3520,8 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
 
     if (Custom_Order_Info)
     {
-        RemapBufferToCustomOrder(Output_Buffer->lodHigherResizeBuffer, outputResolution_x);
+        /* FillImage still samples native map layout; remap runs after resize so output matches the order file. */
+        RemapBufferToCustomOrder(Output_Buffer->lodHigherResizeBuffer, outputResolution_x, outputResolution_y);
     }
 
     {
@@ -3282,7 +3554,7 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
         ThreadPoolWait(Thread_Pool);
     }
 
-    if (gridDrawContigRange)
+    if (gridDrawContigRange && Grid->size > 0)
     {
         memset((void *)Output_Buffer->outputImageBufferGridFillFlags, 0, NumOutputImageBufferGridFillFlags(Output_Buffer));
         
@@ -3379,11 +3651,18 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
         ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 2));
         ThreadPoolAddTask(Thread_Pool, FillInGrid_Thread, (data + 3));
         ThreadPoolWait(Thread_Pool);
+
+        PrintStatus("FillImage: sequence grid done");
+        fflush(stdout);
     }
-    else if (Custom_Order_Info)
+    else if (Custom_Order_Info && Grid->size > 0)
     {
+        /* Grid lines follow customCumulativeTexels (reordered contig starts + outer frame), not native map positions. */
         FillInGridCustomOrder(outputResolution_x, outputResolution_y);
     }
+
+    PrintStatus("FillImage: complete");
+    fflush(stdout);
 
 FillImageExit:
     return(returnValue);
@@ -3502,6 +3781,12 @@ MainArgs
     u32 gridColourSet = 1;
     u32 colourMapSet = 1;
     u32 printSequenceNames = 0;
+
+    u32 mapq_layer_index = 0;
+    u32 mapq_layer_option_set = 0;
+    u32 mapq_threshold_pick = 0;
+    u32 mapq_threshold_option_set = 0;
+    u32 mapq_cli_invalid = 0;
     
     u32 jpegQualitySet = 1;
     u32 jpegQualitySetAttempt = 0;
@@ -3529,6 +3814,8 @@ MainArgs
             { (char *)"colourMap",      ko_required_argument,   310 },
             { (char *)"printColourMapNames",  ko_no_argument,   311 },
             { (char *)"printSequenceNames",   ko_no_argument,   312 },
+            { (char *)"mapqThreshold",    ko_required_argument,   323 },
+            { (char *)"mapqLayer",        ko_required_argument,   324 },
             { (char *)"jpegQuality",    ko_required_argument,   313 },
             { (char *)"verbose",        ko_required_argument,   314 },
 	    { (char *)"version",        ko_no_argument,         315 },
@@ -3666,7 +3953,35 @@ MainArgs
 
                case 312:
                   {
-                     if (ArgCount == 4) printSequenceNames = 1;
+                     printSequenceNames = 1;
+                  }
+                  break;
+
+               case 323:
+                  {
+                     if (!StringToInt_Check((u08 *)opt.arg, &mapq_threshold_pick))
+                     {
+                        PrintError("Cannot parse mapqThreshold option \'%s\' (non-negative integer required)", opt.arg);
+                        mapq_cli_invalid = 1;
+                     }
+                     else
+                     {
+                        mapq_threshold_option_set = 1;
+                     }
+                  }
+                  break;
+
+               case 324:
+                  {
+                     if (!StringToInt_Check((u08 *)opt.arg, &mapq_layer_index))
+                     {
+                        PrintError("Cannot parse mapqLayer option \'%s\' (non-negative integer required)", opt.arg);
+                        mapq_cli_invalid = 1;
+                     }
+                     else
+                     {
+                        mapq_layer_option_set = 1;
+                     }
                   }
                   break;
 
@@ -3738,8 +4053,29 @@ MainArgs
                      }
                   }
                   break;
+
+               default:
+                  if (c == '?')
+                  {
+                     PrintError("Unknown command-line option");
+                     returnCode = EXIT_FAILURE;
+                     goto end;
+                  }
+                  if (c == ':')
+                  {
+                     PrintError("Missing required argument for command-line option");
+                     returnCode = EXIT_FAILURE;
+                     goto end;
+                  }
+                  break;
             }
         }
+    }
+
+    if (mapq_cli_invalid)
+    {
+       returnCode = EXIT_FAILURE;
+       goto end;
     }
   
     if (printHelp || ArgCount == 1)
@@ -3831,6 +4167,14 @@ MainArgs
        goto end;
     }
 
+    /* Pick one MAPQ segment: by stored threshold (--mapqThreshold) or by segment index (--mapqLayer). */
+    if (mapq_threshold_option_set && mapq_layer_option_set)
+    {
+       PrintError("--mapqThreshold and --mapqLayer cannot be used together");
+       returnCode = EXIT_FAILURE;
+       goto end;
+    }
+
     if (outputPrefixSet)
     {
         *outputPrefixStart++ = sep;
@@ -3868,17 +4212,24 @@ MainArgs
        Output_Buffer->outputImageBuffer[1] = PushArray(Working_Set, u08, 3 * outputResolution * outputResolution);
        Output_Buffer->outputImageBufferGridFillFlags = PushArray(Working_Set, volatile u08, NumOutputImageBufferGridFillFlags(Output_Buffer));
        Output_Buffer->outputBufferPtr = 0;
-       Output_Buffer->lodLowerBuffer = PushArray(Working_Set, u08, texMinResolution * texMinResolution);
-       Output_Buffer->lodHigherBuffer = PushArray(Working_Set, u08, 4 * texMinResolution * texMinResolution);
+       Output_Buffer->lodLowerBuffer = 0;
+       Output_Buffer->lodHigherBuffer = 0;
+       Output_Buffer->lodBufferExtent = 0;
        Output_Buffer->lodHigherResizeBuffer = PushArray(Working_Set, u08, outputResolution * outputResolution);
        Output_Buffer->lodLowerResizeBuffer = PushArray(Working_Set, u08, outputResolution * outputResolution);
 
        //STB_Memory_Arena = PushSubArena(Working_Set, 12 * outputResolution * outputResolution);
        CreateMemoryArena(STB_Memory_Arena, 12 * outputResolution * outputResolution);
        STB_Compressor = libdeflate_alloc_compressor(12);
-       textureBufferQueueArena = PushSubArena(Working_Set, textureBufferQueueTotalMemory);
+       textureBufferQueueArena = 0;
 
        Avir_Thread_Pool = new avir_thread_pool();
+       if (!Avir_Thread_Pool)
+       {
+           PrintError("Could not allocate image resize thread pool");
+           returnCode = EXIT_FAILURE;
+           goto end;
+       }
 
        Grid = PushStruct(Working_Set, grid, 5);
        InitialiseGridColour(Grid, gridSize, gridColour);
@@ -3896,69 +4247,135 @@ MainArgs
         FILE *file;
         if ((file = fopen((const char *)inputFileName, "rb")))
         {
-            u08 magicTest[sizeof(magic)];
+            Map_File_Layers = PushArray(Working_Set, pretext_mapq_layer_info, Max_Map_File_Layers);
+            Number_Of_Map_File_Layers = 0;
+            u64 nextSegmentOffset = 0;
+            u08 *firstLayerIdentityBase = 0;  /* header bytes through mip levels; must match across MAPQ layers */
+            u32 firstLayerIdentityLen = 0;
 
-            u32 bytesRead = (u32)fread(magicTest, 1, sizeof(magicTest), file);
-            if (bytesRead == sizeof(magicTest))
+            image_target **targetHeadPtr = 0;
+            image_target *targetHead = 0;
+            char *sequenceToUse = targetOptions;
+            u32 useCustomOrder = 0;
+
+            /* Each iteration: one pstm segment (magic, header, texture blocks); nextSegmentOffset = end of segment. */
+            while (Number_Of_Map_File_Layers < Max_Map_File_Layers)
             {
+                if (FileSeekSet(file, nextSegmentOffset))
+                {
+                    if (!Number_Of_Map_File_Layers)
+                    {
+                        PrintError("Could not seek in '%s'", inputFileName);
+                        fclose(file);
+                        file = 0;
+                    }
+                    break;
+                }
+
+                u08 magicTest[sizeof(magic)];
+                if (fread(magicTest, 1, sizeof(magicTest), file) != sizeof(magicTest))
+                {
+                    if (!Number_Of_Map_File_Layers)
+                    {
+                        fclose(file);
+                        file = 0;
+                    }
+                    break;
+                }
+
+                u32 magicMismatch = 0;
                 ForLoop(sizeof(magic))
                 {
                     if (magic[index] != magicTest[index])
                     {
-                        fclose(file);
-                        file = 0;
+                        magicMismatch = 1;
                         break;
                     }
                 }
-            }
-            else
-            {
-                fclose(file);
-                file = 0;
-            }
+                if (magicMismatch)
+                {
+                    if (!Number_Of_Map_File_Layers)
+                    {
+                        fclose(file);
+                        file = 0;
+                    }
+                    break;
+                }
 
-            if (file)
-            {
+                u64 segmentStart = nextSegmentOffset;
+
                 u32 nBytesHeaderComp;
                 u32 nBytesHeader;
-                fread(&nBytesHeaderComp, 1, 4, file);
-                fread(&nBytesHeader, 1, 4, file);
-                u08 *header = PushArray(Working_Set, u08, nBytesHeader);
+                if (fread(&nBytesHeaderComp, 1, 4, file) != 4 || fread(&nBytesHeader, 1, 4, file) != 4)
+                {
+                    PrintError("Truncated header size fields in '%s'", inputFileName);
+                    returnCode = EXIT_FAILURE;
+                    fclose(file);
+                    file = 0;
+                    goto closeFileAndExit;
+                }
+
+                u08 *headerBlob = PushArray(Working_Set, u08, nBytesHeader);
                 u08 *compressionBuffer = PushArray(Working_Set, u08, nBytesHeaderComp);
 
-                fread(compressionBuffer, 1, nBytesHeaderComp, file);
-                if (!libdeflate_deflate_decompress(decompressor, (const void *)compressionBuffer, nBytesHeaderComp, (void *)header, nBytesHeader, NULL))
+                if (fread(compressionBuffer, 1, nBytesHeaderComp, file) != nBytesHeaderComp)
                 {
-                    FreeLastPush(Working_Set); // comp buffer
+                    PrintError("Truncated compressed header in '%s'", inputFileName);
+                    returnCode = EXIT_FAILURE;
+                    FreeLastPush(Working_Set);
+                    fclose(file);
+                    file = 0;
+                    goto closeFileAndExit;
+                }
 
-                    u64 val64;
-                    u08 *ptr = (u08 *)&val64;
-                    ForLoop(8)
-                    {
-                        *ptr++ = *header++;
-                    }
-                    u64 totalGenomeLength = val64;
+                if (libdeflate_deflate_decompress(decompressor, (const void *)compressionBuffer, nBytesHeaderComp, (void *)headerBlob, nBytesHeader, NULL))
+                {
+                    PrintError("Could not decompress header of '%s'", inputFileName);
+                    returnCode = EXIT_FAILURE;
+                    FreeLastPush(Working_Set);
+                    FreeLastPush(Working_Set);
+                    fclose(file);
+                    file = 0;
+                    goto closeFileAndExit;
+                }
+                FreeLastPush(Working_Set);
 
-                    u32 val32;
-                    ptr = (u08 *)&val32;
-                    ForLoop(4)
-                    {
-                        *ptr++ = *header++;
-                    }
-                    u32 numberOfContigs = val32;
-                    
-                    contig *contigs = PushArray(Working_Set, contig, (2 * numberOfContigs));
+                if (!Number_Of_Map_File_Layers)
+                {
+                    firstLayerIdentityBase = headerBlob;
+                }
+
+                u08 *walk = headerBlob;
+                u64 val64;
+                u08 *ptr = (u08 *)&val64;
+                ForLoop(8)
+                {
+                    *ptr++ = *walk++;
+                }
+                u64 totalGenomeLength = val64;
+
+                u32 val32;
+                ptr = (u08 *)&val32;
+                ForLoop(4)
+                {
+                    *ptr++ = *walk++;
+                }
+                u32 numberOfContigs = val32;
+
+                if (printSequenceNames)
+                {
+                    contig *names = PushArray(Working_Set, contig, numberOfContigs);
                     f32 cumulativeLength = 0.0f;
                     ForLoop(numberOfContigs)
                     {
-                        contig *cont = contigs + index + numberOfContigs;
+                        contig *cont = names + index;
                         f32 frac;
                         u32 name[16];
 
                         ptr = (u08 *)&frac;
                         ForLoop2(4)
                         {
-                            *ptr++ = *header++;
+                            *ptr++ = *walk++;
                         }
 
                         cont->fractionalLength = frac;
@@ -3968,7 +4385,7 @@ MainArgs
                         ptr = (u08 *)name;
                         ForLoop2(64)
                         {
-                            *ptr++ = *header++;
+                            *ptr++ = *walk++;
                         }
 
                         ForLoop2(16)
@@ -3977,43 +4394,144 @@ MainArgs
                         }
                     }
 
-                    if (printSequenceNames)
+                    ForLoop(numberOfContigs)
                     {
-                       ForLoop(numberOfContigs)
-                       {
-                          fprintf(stdout, "%s\n", (char *)((contigs + index + numberOfContigs)->name));
-                       }
-                       goto closeFileAndExit;
+                        fprintf(stdout, "%s\n", (char *)(names + index)->name);
                     }
+                    FreeLastPush(Working_Set);
+                    FreeLastPush(Working_Set);
+                    fclose(file);
+                    file = 0;
+                    goto closeFileAndExit;
+                }
 
-                    u08 textureRes = *header++;
-                    u08 nTextRes = *header++;
-                    u08 mipMapLevels = *header;
-
-                    u32 textureResolution = Pow2(textureRes);
-                    u32 numberOfTextures1D = Pow2(nTextRes);
-                    u32 numberOfMipMaps = mipMapLevels;
-
-                    u32 nBytesPerText = 0;
-                    ForLoop(numberOfMipMaps)
-                    {
-                        nBytesPerText += Pow2((2 * textureRes--));
-                    }
-                    nBytesPerText >>= 1;
-                    Bytes_Per_Texture = nBytesPerText;
-
-                    FreeLastPush(Working_Set); // contigs
-                    FreeLastPush(Working_Set); // header
-                    
+                if (!Number_Of_Map_File_Layers)
+                {
                     Map_Properties = PushStruct(Working_Set, map_properties);
                     Map_Properties->contigs = PushArray(Working_Set, contig, numberOfContigs);
-                    u08 *source = (u08 *)(contigs + numberOfContigs);
-                    u08 *dest = (u08 *)Map_Properties->contigs;
-
-                    ForLoop(numberOfContigs * sizeof(contig))
+                    f32 cumulativeLength = 0.0f;
+                    ForLoop(numberOfContigs)
                     {
-                        *dest++ = *source++;
+                        contig *cont = Map_Properties->contigs + index;
+                        f32 frac;
+                        u32 name[16];
+
+                        ptr = (u08 *)&frac;
+                        ForLoop2(4)
+                        {
+                            *ptr++ = *walk++;
+                        }
+
+                        cont->fractionalLength = frac;
+                        cont->previousCumulativeLength = cumulativeLength;
+                        cumulativeLength += frac;
+
+                        ptr = (u08 *)name;
+                        ForLoop2(64)
+                        {
+                            *ptr++ = *walk++;
+                        }
+
+                        ForLoop2(16)
+                        {
+                            cont->name[index2] = name[index2];
+                        }
                     }
+                }
+                else
+                {
+                    ForLoop(numberOfContigs)
+                    {
+                        f32 frac;
+                        u32 name[16];
+
+                        ptr = (u08 *)&frac;
+                        ForLoop2(4)
+                        {
+                            *ptr++ = *walk++;
+                        }
+
+                        ptr = (u08 *)name;
+                        ForLoop2(64)
+                        {
+                            *ptr++ = *walk++;
+                        }
+                        (void)frac;
+                        (void)name;
+                    }
+                }
+
+                u08 textureResByte = *walk++;
+                u08 nTextResByte = *walk++;
+                u08 mipMapLevels = *walk++;  /* consume mip byte before optional layr tail */
+                u08 *walkAfterMip = walk;
+
+                u32 mapq_threshold_meta = 0;
+                u32 min_mapq_prefilter_meta = 0;
+                u16 mapq_layer_index_meta = 0;
+                u16 number_of_mapq_layers_meta = 1;
+                /* Optional MAPQ layer metadata (PretextMap multi-layer output). */
+                u32 headerConsumed = (u32)(walk - headerBlob);
+                u32 headerRemaining = (headerConsumed <= nBytesHeader) ? (nBytesHeader - headerConsumed) : 0;
+                if (headerRemaining >= MapQ_Layer_Header_Extension_Size &&
+                    walk[0] == 'l' && walk[1] == 'a' && walk[2] == 'y' && walk[3] == 'r')
+                {
+                    u08 *ex = walk + 4;
+                    ex += 2;
+                    ptr = (u08 *)&mapq_layer_index_meta;
+                    ForLoop(2)
+                    {
+                        *ptr++ = *ex++;
+                    }
+                    ptr = (u08 *)&number_of_mapq_layers_meta;
+                    ForLoop(2)
+                    {
+                        *ptr++ = *ex++;
+                    }
+                    ptr = (u08 *)&mapq_threshold_meta;
+                    ForLoop(4)
+                    {
+                        *ptr++ = *ex++;
+                    }
+                    ptr = (u08 *)&min_mapq_prefilter_meta;
+                    ForLoop(4)
+                    {
+                        *ptr++ = *ex++;
+                    }
+                    walk = ex;
+                }
+
+                if (!Number_Of_Map_File_Layers)
+                {
+                    firstLayerIdentityLen = (u32)(walkAfterMip - headerBlob);
+                }
+                else
+                {
+                    if (memcmp(headerBlob, firstLayerIdentityBase, firstLayerIdentityLen) != 0)
+                    {
+                        PrintError("MAPQ layer %u: header prefix does not match the first layer (sequence layout must be identical)", Number_Of_Map_File_Layers);
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
+                    }
+                }
+
+                u32 textureResolution = Pow2(textureResByte);
+                u32 numberOfTextures1D = Pow2(nTextResByte);
+                u32 numberOfMipMaps = mipMapLevels;
+
+                u32 nBytesPerText = 0;
+                u32 textureResIter = textureResByte;
+                ForLoop(numberOfMipMaps)
+                {
+                    nBytesPerText += Pow2((2 * textureResIter--));
+                }
+                nBytesPerText >>= 1;
+
+                if (!Number_Of_Map_File_Layers)
+                {
+                    Bytes_Per_Texture = nBytesPerText;
 
                     Map_Properties->totalGenomeLength = totalGenomeLength;
                     Map_Properties->numberOfContigs = numberOfContigs;
@@ -4026,32 +4544,222 @@ MainArgs
                     {
                         InsertContigIntoHashTable(index, GetHashedContigName(Map_Properties->contigs + index));
                     }
-
-                    u32 numberOfTextureBlocks = (Map_Properties->numberOfTextures1D + 1) * (Map_Properties->numberOfTextures1D >> 1);
-                    
-                    File_Atlas = PushArray(Working_Set, file_atlas_entry, numberOfTextureBlocks);
-
-                    PrintStatus("Indexing file...");
-                    u32 currLocation = sizeof(magic) + 8 + nBytesHeaderComp;
-                    ForLoop(numberOfTextureBlocks)
+                }
+                else
+                {
+                    if (nBytesPerText != Bytes_Per_Texture ||
+                        mipMapLevels != Map_Properties->numberOfMipMaps ||
+                        textureResolution != Map_Properties->textureResolution ||
+                        numberOfTextures1D != Map_Properties->numberOfTextures1D ||
+                        numberOfContigs != Map_Properties->numberOfContigs ||
+                        totalGenomeLength != Map_Properties->totalGenomeLength)
                     {
-                        file_atlas_entry *entry = File_Atlas + index;
-                        u32 nBytes;
-                        fread(&nBytes, 1, 4, file);
-                        fseek(file, nBytes, SEEK_CUR);
-                        currLocation += 4;
-
-                        entry->base = currLocation;
-                        entry->nBytes = nBytes;
-
-                        currLocation += nBytes;
+                        PrintError("MAPQ layer %u: texture layout does not match the first layer", Number_Of_Map_File_Layers);
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
                     }
-                    PrintStatus("File indexed");
+                }
 
+                u32 numberOfTextureBlocks = (numberOfTextures1D + 1) * (numberOfTextures1D >> 1);
+                if (!Number_Of_Map_File_Layers)
+                {
+                    Number_Of_Texture_Blocks = numberOfTextureBlocks;
+                }
+                pretext_mapq_layer_info *layerInfo = Map_File_Layers + Number_Of_Map_File_Layers;
+                layerInfo->segment_file_offset = segmentStart;
+                layerInfo->mapq_layer_index = mapq_layer_index_meta;
+                layerInfo->number_of_mapq_layers = number_of_mapq_layers_meta;
+                layerInfo->mapq_threshold = mapq_threshold_meta;
+                layerInfo->min_mapq_prefilter = min_mapq_prefilter_meta;
+                layerInfo->atlas = PushArray(Working_Set, file_atlas_entry, numberOfTextureBlocks);
+
+                PrintStatus("Indexing file segment at offset %llu...", (unsigned long long)segmentStart);
+                /* Texture bases are absolute file offsets (segmentStart + header + per-block payload). */
+                u64 currLocation = segmentStart + sizeof(magic) + 8 + (u64)nBytesHeaderComp;
+                if (currLocation < segmentStart)
+                {
+                    PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
+                    returnCode = EXIT_FAILURE;
                     fclose(file);
                     file = 0;
-
+                    goto closeFileAndExit;
+                }
+                ForLoop(numberOfTextureBlocks)
+                {
+                    file_atlas_entry *entry = layerInfo->atlas + index;
+                    u32 nBytes;
+                    if (fread(&nBytes, 1, 4, file) != 4)
                     {
+                        PrintError("Truncated texture index in '%s'", inputFileName);
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
+                    }
+                    if (!nBytes || nBytes > (Bytes_Per_Texture + Compression_Header_Size))
+                    {
+                        PrintError("Invalid compressed texture size %u at block %u in '%s'", nBytes, index, inputFileName);
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
+                    }
+                    if (FileSeekCur(file, nBytes))
+                    {
+                        PrintError("Could not skip texture data in '%s'", inputFileName);
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
+                    }
+                    {
+                        u64 prevLocation = currLocation;
+                        currLocation += 4;
+                        if (currLocation < prevLocation)
+                        {
+                            PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
+                            returnCode = EXIT_FAILURE;
+                            fclose(file);
+                            file = 0;
+                            goto closeFileAndExit;
+                        }
+                    }
+                    entry->base = currLocation;
+                    entry->nBytes = nBytes;
+                    {
+                        u64 prevLocation = currLocation;
+                        currLocation += (u64)nBytes;
+                        if (currLocation < prevLocation)
+                        {
+                            PrintError("Texture atlas offset overflow past 64 bits in '%s'", inputFileName);
+                            returnCode = EXIT_FAILURE;
+                            fclose(file);
+                            file = 0;
+                            goto closeFileAndExit;
+                        }
+                    }
+                }
+
+                ++Number_Of_Map_File_Layers;
+                if (FileTell(file, &nextSegmentOffset))
+                {
+                    PrintError("Could not read file position in '%s'", inputFileName);
+                    returnCode = EXIT_FAILURE;
+                    fclose(file);
+                    file = 0;
+                    goto closeFileAndExit;
+                }
+            }
+
+            if (!Number_Of_Map_File_Layers)
+            {
+                PrintError("\'%s\' is not a pretext file", inputFileName);
+                returnCode = EXIT_FAILURE;
+                if (file)
+                {
+                    fclose(file);
+                    file = 0;
+                }
+                goto closeFileAndExit;
+            }
+
+            {
+                /* Default layer 0; File_Atlas points at the selected segment's atlas for texture loads. */
+                u32 selectedLayer = 0;
+                if (mapq_threshold_option_set)
+                {
+                    u32 found = 0;
+                    ForLoop(Number_Of_Map_File_Layers)
+                    {
+                        if (Map_File_Layers[index].mapq_threshold == mapq_threshold_pick)
+                        {
+                            selectedLayer = index;
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found)
+                    {
+                        PrintError("No MAPQ layer with threshold %u in '%s'", mapq_threshold_pick, inputFileName);
+                        ForLoop(Number_Of_Map_File_Layers)
+                        {
+                            PrintStatus("  layer %u: MAPQ >= %u (prefilter >= %u)", index,
+                                        Map_File_Layers[index].mapq_threshold,
+                                        Map_File_Layers[index].min_mapq_prefilter);
+                        }
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
+                    }
+                }
+                else if (mapq_layer_option_set)
+                {
+                    if (mapq_layer_index >= Number_Of_Map_File_Layers)
+                    {
+                        PrintError("--mapqLayer %u is out of range (file has %u layer%s)", mapq_layer_index, Number_Of_Map_File_Layers,
+                                   Number_Of_Map_File_Layers == 1 ? "" : "s");
+                        returnCode = EXIT_FAILURE;
+                        fclose(file);
+                        file = 0;
+                        goto closeFileAndExit;
+                    }
+                    selectedLayer = mapq_layer_index;
+                }
+
+                File_Atlas = Map_File_Layers[selectedLayer].atlas;
+
+                if (Number_Of_Map_File_Layers > 1)
+                {
+                    PrintStatus("Indexed %u MAPQ layers; using layer %u (MAPQ >= %u, prefilter >= %u)", Number_Of_Map_File_Layers, selectedLayer,
+                                Map_File_Layers[selectedLayer].mapq_threshold, Map_File_Layers[selectedLayer].min_mapq_prefilter);
+                }
+                else
+                {
+                    PrintStatus("File indexed");
+                }
+            }
+
+            fclose(file);
+            file = 0;
+
+            if (!printSequenceNames)
+            {
+                u32 nTexelsForLod = Map_Properties->numberOfTextures1D * Map_Properties->textureResolution;
+                u32 lodBufferExtent = RequiredLodBufferExtent(outputResolution, nTexelsForLod);
+                Output_Buffer->lodBufferExtent = lodBufferExtent;
+                Output_Buffer->lodLowerBuffer = PushArray(Working_Set, u08, lodBufferExtent * lodBufferExtent);
+                Output_Buffer->lodHigherBuffer = PushArray(Working_Set, u08, 4 * lodBufferExtent * lodBufferExtent);
+                if (!Output_Buffer->lodLowerBuffer || !Output_Buffer->lodHigherBuffer)
+                {
+                    PrintError("Could not allocate LOD image buffers (%u texels per axis at LOD)", lodBufferExtent);
+                    returnCode = EXIT_FAILURE;
+                    goto closeFileAndExit;
+                }
+                PrintStatus("LOD buffer extent: %u pixels (map axis %u texels)", lodBufferExtent, nTexelsForLod);
+            }
+
+            {
+                    {
+                        u64 queueArenaSize = RecommendedTextureBufferQueueArenaSize(Bytes_Per_Texture);
+                        if (queueArenaSize < (u64)textureBufferQueueTotalMemory)
+                        {
+                            queueArenaSize = (u64)textureBufferQueueTotalMemory;
+                        }
+                        /* Heap-backed arena: Working_Set is often full after output buffers; PushSubArena OOM segfaults. */
+                        CreateMemoryArena(Texture_Queue_Arena, queueArenaSize);
+                        textureBufferQueueArena = &Texture_Queue_Arena;
+                        if (!textureBufferQueueArena->base)
+                        {
+                            PrintError("Could not allocate texture load queue memory (%u bytes per texture)", Bytes_Per_Texture);
+                            returnCode = EXIT_FAILURE;
+                            goto closeFileAndExit;
+                        }
+                        PrintStatus("Texture load queue: %u bytes per texture, %llu byte arena",
+                                    Bytes_Per_Texture, (unsigned long long)queueArenaSize);
+
                         u32 messageIndex = 0;
                         if (InitialiseTextureBufferQueue(textureBufferQueueArena, Texture_Buffer_Queue, Bytes_Per_Texture, (const char *)inputFileName, &messageIndex))
                         {
@@ -4061,10 +4769,6 @@ MainArgs
                         }
                     }
 
-                    image_target **targetHeadPtr = 0;
-                    image_target *targetHead = 0;
-                    char *sequenceToUse = targetOptions;
-                    u32 useCustomOrder = 0;
                     if (orderFilePath)
                     {
                         if (orderContiguous)
@@ -4104,6 +4808,8 @@ MainArgs
                         goto closeFileAndExit;
                     }
 
+                    PrintStatus("Generating image(s)...");
+
                     {
                         u32 returnMessageIndex = 0;
 
@@ -4113,6 +4819,7 @@ MainArgs
                         if (useCustomOrder)
                         {
                             stbsp_snprintf((char *)outputPrefixEnd, (s32)outputPathRemainingBuffer, "CustomOrder");
+                            /* Crop native map to [minMapTexel, maxMapTexel); FillImage remaps to order-file axes. */
                             if (FillImage(Custom_Order_Info->minMapTexel, Custom_Order_Info->minMapTexel,
                                          Custom_Order_Info->mapTexelRange, Custom_Order_Info->mapTexelRange,
                                          &outputResolution_x, &outputResolution_y, &returnMessageIndex, 0))
@@ -4463,22 +5170,12 @@ MainArgs
                         returnCode = EXIT_FAILURE;
                         goto closeFileAndExit;
                     }
-                }
-                else
-                {
-                    PrintError("Could not decompress header of \'%s\'", inputFileName);
-                    returnCode = EXIT_FAILURE;
-                }
+
+            }
 
 closeFileAndExit:
                 if (file) fclose(file);
                 if (Texture_Buffer_Queue) CloseTextureBufferQueueFiles(Texture_Buffer_Queue);
-            }
-            else
-            {
-                PrintError("\'%s\' is not a pretext file", inputFileName);
-                returnCode = EXIT_FAILURE;
-            }
         }
         else
         {
