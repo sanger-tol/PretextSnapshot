@@ -2153,14 +2153,16 @@ FillImage_Thread(void *in)
                         bc4_x < bc4BlockEnd_x[0];
                         ++bc4_x )
                 {
+                    /* Each LOD stores a full square of BC4 blocks (bytesPerLod = res*(res/2));
+                       lowerTriangular only transposes the 2D->1D index, it does not use triangular packing. */
                     u32 bc4Index = lowerTriangular ? ((bc4_x * bc4Size[0]) + bc4_y) : ((bc4_y * bc4Size[0]) + bc4_x);
-                    u32 maxBc4Index = lowerTriangular ? ((bc4Size[0] * (bc4Size[0] + 1)) >> 1) : (bc4Size[0] * bc4Size[0]);
+                    u32 maxBc4Index = bc4Size[0] * bc4Size[0];
                     if (bc4Index >= maxBc4Index)
                     {
                         continue;
                     }
                     u08 *bc4BlockData = texture[0] + (bc4Index << 3);
-                    if ((bc4BlockData + 8) > (buffer->texture + Bytes_Per_Texture))
+                    if ((bc4BlockData + 8) > (texture[0] + (maxBc4Index << 3)))
                     {
                         *returnStatus = 1;
                         goto FillImageThreadExit;
@@ -2222,13 +2224,13 @@ FillImage_Thread(void *in)
                             ++bc4_x )
                     {
                         u32 bc4Index = lowerTriangular ? ((bc4_x * bc4Size[1]) + bc4_y) : ((bc4_y * bc4Size[1]) + bc4_x);
-                        u32 maxBc4Index = lowerTriangular ? ((bc4Size[1] * (bc4Size[1] + 1)) >> 1) : (bc4Size[1] * bc4Size[1]);
+                        u32 maxBc4Index = bc4Size[1] * bc4Size[1];
                         if (bc4Index >= maxBc4Index)
                         {
                             continue;
                         }
                         u08 *bc4BlockData = texture[1] + (bc4Index << 3);
-                        if ((bc4BlockData + 8) > (buffer->texture + Bytes_Per_Texture))
+                        if ((bc4BlockData + 8) > (texture[1] + (maxBc4Index << 3)))
                         {
                             *returnStatus = 1;
                             goto FillImageThreadExit;
