@@ -14,7 +14,7 @@ extensions = {'.avx2': ['-mavx2'], '.avx': ['-mavx'], '.sse42': ['-msse4.2'], '.
 libdeflate_c_args = ['-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI']
 foreach ext, flag : extensions
     flags = base_flags + flag
-    executable('PretextSnapshot' + ext, 'PretextSnapshot.cpp', dependencies : [thread_dep, math_dep, cpp_dep], install : true, cpp_args : flags+['-DPV=' + meson.project_version()], link_with : 
+    executable('PretextSnapshot' + ext, 'PretextSnapshot.cpp', 'SequentialTextureLoad.cpp', dependencies : [thread_dep, math_dep, cpp_dep], install : true, cpp_args : flags+['-DPV=' + meson.project_version()], link_with : 
         [   static_library('deflate' + ext, 'libdeflate/lib/deflate_compress.c', 'libdeflate/lib/deflate_decompress.c', 'libdeflate/lib/utils.c', c_args : flags + libdeflate_c_args, link_with : 
             [   static_library('deflate_x86' + ext, 'libdeflate/lib/x86/cpu_features.c', c_args : flags + libdeflate_c_args),
                 static_library('deflate_arm' + ext, 'libdeflate/lib/arm/cpu_features.c', c_args : flags),

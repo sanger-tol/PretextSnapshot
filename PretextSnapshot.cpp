@@ -28,6 +28,7 @@ SOFTWARE.
 #define PretextSnapshot_Version "PretextSnapshot Version " my_String(PV)
 
 #include "Header.h"
+#include "SequentialTextureLoad.h"
 #include "ColourMapData.cpp"
 
 global_variable
@@ -1803,16 +1804,13 @@ FileTell(FILE *file, u64 *offset)
     return 0;
 }
 
-struct
-file_atlas_entry
-{
-    u64 base;
-    u32 nBytes;
-};
-
 global_variable
 file_atlas_entry *
 File_Atlas;
+
+global_variable
+const char *
+Map_File_Path;
 
 /* Multi-MAPQ .pretext files concatenate several pstm segments; each segment has its own header and texture atlas. */
 #define Max_Map_File_Layers 32
@@ -3369,6 +3367,72 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
     }
 
     {
+        u32 nTex = Map_Properties->numberOfTextures1D;
+        u32 texRes = Map_Properties->textureResolution;
+        u32 textureStart_x = (texelLodStart_x[0] << lodLevel) / texRes;
+        u32 textureStart_y = (texelLodStart_y[0] << lodLevel) / texRes;
+        u32 textureEnd_x = lodPixelResolution_x[0]
+            ? ((((texelLodStart_x[0] + lodPixelResolution_x[0] - 1) << lodLevel) / texRes) + 1)
+            : textureStart_x;
+        u32 textureEnd_y = lodPixelResolution_y[0]
+            ? ((((texelLodStart_y[0] + lodPixelResolution_y[0] - 1) << lodLevel) / texRes) + 1)
+            : textureStart_y;
+
+        if (textureEnd_x > nTex) textureEnd_x = nTex;
+        if (textureEnd_y > nTex) textureEnd_y = nTex;
+
+        /* Most of the map: read the upper triangle in file order and inflate each block once. */
+        if (Map_File_Path && SequentialFillPreferred(textureStart_x, textureEnd_x, textureStart_y, textureEnd_y, nTex))
+        {
+            sequential_map_layout layout;
+            sequential_lod_window window;
+            uint32_t seqStatus;
+
+            layout.path = Map_File_Path;
+            layout.atlas = File_Atlas;
+            layout.nBlocks = Number_Of_Texture_Blocks;
+            layout.numberOfTextures1D = nTex;
+            layout.textureResolution = texRes;
+            layout.bytesPerTexture = Bytes_Per_Texture;
+            layout.nThreads = 4;
+
+            window.image0 = Output_Buffer->lodHigherBuffer;
+            window.image1 = Output_Buffer->lodLowerBuffer;
+            window.lodLevel = lodLevel;
+            window.fillTwoImageBuffers = fillTwoImageBuffers;
+            window.start0X = texelLodStart_x[0];
+            window.range0X = lodPixelResolution_x[0];
+            window.start0Y = texelLodStart_y[0];
+            window.range0Y = lodPixelResolution_y[0];
+            window.start1X = texelLodStart_x[1];
+            window.range1X = lodPixelResolution_x[1];
+            window.start1Y = texelLodStart_y[1];
+            window.range1Y = lodPixelResolution_y[1];
+            window.pitch0 = lodPixelResolution_x[0];
+            window.pitch1 = lodPixelResolution_x[1];
+            window.limit0 = 4 * Output_Buffer->lodBufferExtent * Output_Buffer->lodBufferExtent;
+            window.limit1 = Output_Buffer->lodBufferExtent * Output_Buffer->lodBufferExtent;
+
+            PrintStatus("Loading %u texture blocks sequentially", Number_Of_Texture_Blocks);
+            seqStatus = SequentialFillLodImage(&layout, &window);
+            if (seqStatus == SequentialTexture_NotPacked)
+            {
+                PrintStatus("Texture section is not contiguous; loading tile by tile");
+            }
+            else if (seqStatus != SequentialTexture_Ok)
+            {
+                *returnMessageIndex = Texture_Decompress_Error_Message_Index;
+                returnValue = 1;
+                goto FillImageExit;
+            }
+            else
+            {
+                goto FillImageAfterLoad;
+            }
+        }
+    }
+
+    {
         fillImage_thread_data data[4];
         u32 returnStatus = 0;
        
@@ -3465,6 +3529,7 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
         }
     }
 
+FillImageAfterLoad:
     u32 outputResolution_x;
     u32 outputResolution_y;
 
@@ -4187,6 +4252,7 @@ MainArgs
         outputPathRemainingBuffer -= (u32)(outputPrefixEnd - (u08 *)outputPath);
     }
 
+    Map_File_Path = (const char *)inputFileName;
     PrintStatus("Input map: \'%s\'", inputFileName);
     if (!printSequenceNames)
     {
@@ -4577,7 +4643,10 @@ MainArgs
                 layerInfo->min_mapq_prefilter = min_mapq_prefilter_meta;
                 layerInfo->atlas = PushArray(Working_Set, file_atlas_entry, numberOfTextureBlocks);
 
-                PrintStatus("Indexing file segment at offset %llu...", (unsigned long long)segmentStart);
+                PrintStatus(printSequenceNames
+                    ? "Indexing file segment at offset %llu..."
+                    : "Indexing file segment at offset %llu (sequential read)...",
+                    (unsigned long long)segmentStart);
                 /* Texture bases are absolute file offsets (segmentStart + header + per-block payload). */
                 u64 currLocation = segmentStart + sizeof(magic) + 8 + (u64)nBytesHeaderComp;
                 if (currLocation < segmentStart)
@@ -4608,7 +4677,8 @@ MainArgs
                         file = 0;
                         goto closeFileAndExit;
                     }
-                    if (FileSeekCur(file, nBytes))
+                    /* Seeking once per block is a round trip on a network volume. Streaming the payload keeps the same file position. */
+                    if (printSequenceNames ? FileSeekCur(file, nBytes) : SequentialDiscard(file, nBytes))
                     {
                         PrintError("Could not skip texture data in '%s'", inputFileName);
                         returnCode = EXIT_FAILURE;
