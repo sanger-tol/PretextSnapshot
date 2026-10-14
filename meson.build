@@ -1,7 +1,7 @@
 project('PretextSnapshot', ['c', 'cpp'],
     license: 'MIT',
     meson_version: '>=0.57.1',
-    version: '0.0.9'
+    version: '0.1.0'
 )
 
 thread_dep = dependency('threads')
