@@ -39,7 +39,7 @@ SOFTWARE.
 #define Sequential_Compression_Header_Size 128
 #define Sequential_Max_Workers 16
 
-struct bc4_block
+struct sequential_bc4_block
 {
     uint8_t values[8];
     /* Six index bytes, plus two pad bytes. The last texel's 3-bit index is read
@@ -48,7 +48,7 @@ struct bc4_block
 };
 
 static void
-FillBC4Block(struct bc4_block *block, const uint8_t *rawBytes)
+FillSequentialBC4Block(struct sequential_bc4_block *block, const uint8_t *rawBytes)
 {
     uint32_t index;
 
@@ -68,7 +68,7 @@ FillBC4Block(struct bc4_block *block, const uint8_t *rawBytes)
 }
 
 static uint8_t
-GetBC4ValueAt(const struct bc4_block *block, uint8_t x, uint8_t y)
+GetSequentialBC4ValueAt(const struct sequential_bc4_block *block, uint8_t x, uint8_t y)
 {
     uint8_t coord = (uint8_t)(x + (4 * y));
     uint8_t bitsIntoBlock = (uint8_t)(3 * coord);
@@ -159,7 +159,7 @@ SplatOneLod(const uint8_t *mip, uint32_t mipBytes,
             uint32_t bc4Index = lowerTriangular ? ((bc4X * bc4Size) + bc4Y) : ((bc4Y * bc4Size) + bc4X);
             uint32_t maxBc4Index = bc4Size * bc4Size;
             const uint8_t *bc4BlockData;
-            struct bc4_block bc4Block;
+            struct sequential_bc4_block bc4Block;
             uint32_t bc4TexelX0, bc4TexelY0, bc4TexelX1, bc4TexelY1;
             uint32_t texelX, texelY, texelEndX, texelEndY;
             uint32_t y, x;
@@ -167,7 +167,7 @@ SplatOneLod(const uint8_t *mip, uint32_t mipBytes,
             if (bc4Index >= maxBc4Index) continue;
             if ((bc4Index << 3) + 8 > mipBytes) return SequentialTexture_Range;
             bc4BlockData = mip + (bc4Index << 3);
-            FillBC4Block(&bc4Block, bc4BlockData);
+            FillSequentialBC4Block(&bc4Block, bc4BlockData);
 
             bc4TexelX0 = (bc4X << 2) + tileX0;
             bc4TexelY0 = (bc4Y << 2) + tileY0;
@@ -193,7 +193,7 @@ SplatOneLod(const uint8_t *mip, uint32_t mipBytes,
                     if (imX >= pitch || imY >= viewH) return SequentialTexture_Range;
                     pix = (imY * pitch) + imX;
                     if (pix >= limit) return SequentialTexture_Range;
-                    image[pix] = GetBC4ValueAt(&bc4Block, sampleX, sampleY);
+                    image[pix] = GetSequentialBC4ValueAt(&bc4Block, sampleX, sampleY);
                 }
             }
         }
