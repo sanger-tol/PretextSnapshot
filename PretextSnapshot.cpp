@@ -3279,25 +3279,6 @@ global_variable
 u32
 Colour_Map_Index = 5+3;
 
-/* LOD greyscale buffers must hold lodPixelResolution²; when mip level is capped, that can exceed 2× outputResolution. */
-global_function
-u32
-RequiredLodBufferExtent(u32 outputResolution, u32 texelRangeMax)
-{
-    u32 extent = Max(outputResolution, 1024);
-    if (!Map_Properties || texelRangeMax < 1)
-    {
-        return extent;
-    }
-
-    f32 texelsPerPixel = (f32)texelRangeMax / (f32)outputResolution;
-    f32 log2TexelsPerPixel = Max(0.0f, Log2(Max(1.0f, texelsPerPixel)));
-    u32 lodLevel = (u32)log2TexelsPerPixel;
-    lodLevel = Min(lodLevel, Map_Properties->numberOfMipMaps - 1);
-    u32 maxLodPix = ((texelRangeMax - 1) >> lodLevel) + 1;
-    return Max(extent, maxLodPix);
-}
-
 global_function
 u32
 FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y, u32 *outputWidth, u32 *outputHeight, u32 *returnMessageIndex, u32 *gridDrawContigRange = 0)
@@ -3347,14 +3328,6 @@ FillImage(u32 texelStart_x, u32 texelStart_y, u32 texelRange_x, u32 texelRange_y
     if (!lodPixelResolution_x[0] || !lodPixelResolution_y[0])
     {
         *returnMessageIndex = Texel_Range_Too_Small_Error_Message_Index;
-        returnValue = 1;
-        goto FillImageExit;
-    }
-
-    if (lodPixelResolution_x[0] > Output_Buffer->lodBufferExtent ||
-        lodPixelResolution_y[0] > Output_Buffer->lodBufferExtent)
-    {
-        *returnMessageIndex = Lod_Buffer_Extent_Too_Small_Error_Message_Index;
         returnValue = 1;
         goto FillImageExit;
     }
@@ -4280,9 +4253,9 @@ MainArgs
        Output_Buffer->outputImageBuffer[1] = PushArray(Working_Set, u08, 3 * outputResolution * outputResolution);
        Output_Buffer->outputImageBufferGridFillFlags = PushArray(Working_Set, volatile u08, NumOutputImageBufferGridFillFlags(Output_Buffer));
        Output_Buffer->outputBufferPtr = 0;
-       Output_Buffer->lodLowerBuffer = 0;
-       Output_Buffer->lodHigherBuffer = 0;
-       Output_Buffer->lodBufferExtent = 0;
+       Output_Buffer->lodBufferExtent = texMinResolution;
+       Output_Buffer->lodLowerBuffer = PushArray(Working_Set, u08, texMinResolution * texMinResolution);
+       Output_Buffer->lodHigherBuffer = PushArray(Working_Set, u08, 4 * texMinResolution * texMinResolution);
        Output_Buffer->lodHigherResizeBuffer = PushArray(Working_Set, u08, outputResolution * outputResolution);
        Output_Buffer->lodLowerResizeBuffer = PushArray(Working_Set, u08, outputResolution * outputResolution);
 
@@ -4796,22 +4769,6 @@ MainArgs
 
             fclose(file);
             file = 0;
-
-            if (!printSequenceNames)
-            {
-                u32 nTexelsForLod = Map_Properties->numberOfTextures1D * Map_Properties->textureResolution;
-                u32 lodBufferExtent = RequiredLodBufferExtent(outputResolution, nTexelsForLod);
-                Output_Buffer->lodBufferExtent = lodBufferExtent;
-                Output_Buffer->lodLowerBuffer = PushArray(Working_Set, u08, lodBufferExtent * lodBufferExtent);
-                Output_Buffer->lodHigherBuffer = PushArray(Working_Set, u08, 4 * lodBufferExtent * lodBufferExtent);
-                if (!Output_Buffer->lodLowerBuffer || !Output_Buffer->lodHigherBuffer)
-                {
-                    PrintError("Could not allocate LOD image buffers (%u texels per axis at LOD)", lodBufferExtent);
-                    returnCode = EXIT_FAILURE;
-                    goto closeFileAndExit;
-                }
-                PrintStatus("LOD buffer extent: %u pixels (map axis %u texels)", lodBufferExtent, nTexelsForLod);
-            }
 
             {
                     {
