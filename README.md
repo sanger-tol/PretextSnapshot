@@ -16,19 +16,67 @@ Or, just PretextSnapshot can be installed with
 > conda install pretextsnapshot
 ```
 
-# Usage
-PretextSnapshot -m map.pretext --sequences "sequences to image" [other options] <br/>
-PretextSnapshot --help for a full list of options. <br/>
-PretextSnapshot --sequenceHelp for how to format the sequence specification string. <br/>
+## Usage
 
-# Examples
-PretextSnapshot -m map.pretext --sequences "=full"  ::  Generates an image of the whole contact map.<br/>
-PretextSnapshot -m map.pretext --sequences "=all"   ::  Generates an image of each sequence in the contact map.<br/>
-PretextSnapshot -m map.pretext --sequences "seq_0"  ::  Generates an image of the sequence named "seq_0".<br/>
-PretextSnapshot -m map.pretext --sequences "seq_0, seq_1"  ::  Generates an image of "seq_0" and an image of "seq_1".<br/>
-PretextSnapshot -m map.pretext --sequences "seq_0 > seq_10" ::  Generates an image between "seq_0" and "seq_10".<br/>
-PretextSnapshot -m map.pretext --sequences "{seq_0, seq_1}"::  Generates an image of the inter-sequence region between "seq_0" and "seq_1".<br/>
+```bash
+PretextSnapshot -m map.pretext --sequences "<sequences to image>" [options]
+```
 
+| Option | Description |
+|---|---|
+| `-m` | Input contact map (`.pretext` file) |
+| `--sequences` | Which sequence(s) or region(s) to render (see examples below) |
+| `--help` | Show the full list of options |
+| `--sequenceHelp` | Show how to format the sequence specification string |
+
+## Examples
+
+**Whole contact map**
+
+```bash
+PretextSnapshot -m map.pretext --sequences "=full"
+```
+
+**One image per sequence**
+
+```bash
+PretextSnapshot -m map.pretext --sequences "=all"
+```
+
+**A single sequence**
+
+```bash
+PretextSnapshot -m map.pretext --sequences "seq_0"
+```
+
+**Several sequences, one image each**
+
+```bash
+PretextSnapshot -m map.pretext --sequences "seq_0, seq_1"
+```
+
+**A range of sequences (from `seq_0` to `seq_10`)**
+
+```bash
+PretextSnapshot -m map.pretext --sequences "seq_0 > seq_10"
+```
+
+**Inter-sequence contacts between two sequences**
+
+```bash
+PretextSnapshot -m map.pretext --sequences "{seq_0, seq_1}"
+```
+
+## Sequence specification syntax
+
+| Syntax | Meaning |
+|---|---|
+| `=full` | Entire contact map in a single image |
+| `=all` | One image for every sequence |
+| `seq_0` | Only the named sequence |
+| `seq_0, seq_1` | Separate images for each listed sequence |
+| `seq_0 > seq_10` | One image spanning all sequences from `seq_0` to `seq_10` |
+| `{seq_0, seq_1}` | Contacts between `seq_0` and `seq_1` (off-diagonal region) |
 # Custom order snapshots
 To generate snapshots using a custom chromosome/scaffold/sequence order from a file:
 
