@@ -36,7 +36,7 @@ To generate snapshots using a custom chromosome/scaffold/sequence order from a f
 PretextSnapshot -m map.pretext --order order.txt
 ```
 
-The order file should list one sequence name per line (empty lines and `#` comments are ignored). By default, a single image is created with sequences displayed in the order file's order. Use `--per-sequence` for one image per sequence:
+The order file should list one sequence name per line (empty lines and `#` comments are ignored). An optional second column of `+` or `-` sets orientation; `-` reverses that sequence along the custom-order axis. Missing orientation defaults to `+`. By default, a single image is created with sequences displayed in the order file's order. Use `--per-sequence` for one image per sequence:
 
 ```sh
 PretextSnapshot -m map.pretext --order order.txt --per-sequence
@@ -45,11 +45,11 @@ PretextSnapshot -m map.pretext --order order.txt --per-sequence
 Example order file:
 
 ```
-chr1
-chr2
+chr1	+
+chr2	-
 chr3
-chrX
-chrY
+chrX	+
+chrY	-
 ```
 
 # Requirments, running

@@ -281,8 +281,9 @@ Options:
 			        Defaults to "=full" (single contiguous image of the full map).
 
 	--order ord:		Path to a file listing sequence names, one per line (empty lines and # comments ignored).
-			        By default creates a single image with sequences in the order file's order.
-			        Cannot be used with --sequences.
+			        Optional second column '+' or '-' sets orientation ('-' flips/reverses that sequence).
+			        Missing orientation defaults to '+'. By default creates a single image with sequences
+			        in the order file's order. Cannot be used with --sequences.
 
 	--per-sequence:		With --order, create one image per sequence instead of a single reordered image.
 
@@ -1333,6 +1334,7 @@ struct
 custom_order_info
 {
     u32 *orderIndices;
+    u08 *flipped; /* 1 => reverse this sequence along the custom-order axis */
     u32 nOrder;
     u64 *customCumulativeTexels;
     u32 totalCustomTexels;
@@ -1372,6 +1374,7 @@ ReadOrderFileCustomOrder(const char *orderFilePath)
     }
     u32 maxIndices = 65536;
     u32 *indices = (u32 *)PushArray(Working_Set, u32, maxIndices);
+    u08 *flipped = (u08 *)PushArray(Working_Set, u08, maxIndices);
     u32 nIndices = 0;
     char lineBuf[512];
     while (fgets(lineBuf, (s32)ArrayCount(lineBuf), file))
@@ -1383,6 +1386,26 @@ ReadOrderFileCustomOrder(const char *orderFilePath)
         while (*nameEnd && *nameEnd != ' ' && *nameEnd != '\t' && *nameEnd != '\n' && *nameEnd != '\r') ++nameEnd;
         if (nameEnd == line) continue;
         if (nIndices >= maxIndices) { fclose(file); PrintError("Order file has too many sequences"); return 0; }
+
+        u08 isFlipped = 0;
+        {
+            char *orient = nameEnd;
+            while (*orient == ' ' || *orient == '\t') ++orient;
+            if (*orient && *orient != '\n' && *orient != '\r' && *orient != '#')
+            {
+                char sign = *orient;
+                char *after = orient + 1;
+                while (*after == ' ' || *after == '\t') ++after;
+                if ((sign != '+' && sign != '-') || (*after && *after != '\n' && *after != '\r' && *after != '#'))
+                {
+                    fclose(file);
+                    PrintError("Order file orientation must be '+' or '-' (got \'%s\')", orient);
+                    return 0;
+                }
+                isFlipped = (sign == '-') ? 1 : 0;
+            }
+        }
+
         char save = *nameEnd;
         *nameEnd = '\0';
         u32 name32[16];
@@ -1396,6 +1419,7 @@ ReadOrderFileCustomOrder(const char *orderFilePath)
             return 0;
         }
         *nameEnd = save;
+        flipped[nIndices] = isFlipped;
         indices[nIndices++] = index;
     }
     fclose(file);
@@ -1439,6 +1463,7 @@ ReadOrderFileCustomOrder(const char *orderFilePath)
     if (mapTexelRange == 0) mapTexelRange = 1;
     Custom_Order_Info = PushStruct(Working_Set, custom_order_info);
     Custom_Order_Info->orderIndices = indices;
+    Custom_Order_Info->flipped = flipped;
     Custom_Order_Info->nOrder = nIndices;
     Custom_Order_Info->customCumulativeTexels = customCumulativeTexels;
     Custom_Order_Info->totalCustomTexels = totalCustomTexels;
@@ -1850,8 +1875,14 @@ MapTexelToCustomTexel(u32 mapTexel)
         f64 segEnd = segStart + (f64)c->fractionalLength;
         if (mapPos >= segStart && mapPos < segEnd)
         {
+            u64 customStart = o->customCumulativeTexels[k];
+            u64 customLen = o->customCumulativeTexels[k + 1] - customStart;
+            if (customLen == 0) return (u32)customStart;
             f64 frac = (mapPos - segStart) / (f64)c->fractionalLength;
-            return (u32)((f64)o->customCumulativeTexels[k] + frac * (f64)(o->customCumulativeTexels[k + 1] - o->customCumulativeTexels[k]));
+            u32 offset = (u32)(frac * (f64)customLen);
+            if (offset >= customLen) offset = (u32)customLen - 1;
+            if (o->flipped[k]) offset = (u32)customLen - 1 - offset;
+            return (u32)(customStart + offset);
         }
     }
     return 0;
@@ -1878,7 +1909,10 @@ CustomTexelToMapTexel(u32 customTexel)
             f64 frac = (f64)(customTexel - segStart) / (f64)segLen;
             u32 mapLen = mapEnd - mapStart;
             if (mapLen == 0) return mapStart;
-            return mapStart + (u32)(frac * (f64)mapLen);
+            u32 offset = (u32)(frac * (f64)mapLen);
+            if (offset >= mapLen) offset = mapLen - 1;
+            if (o->flipped[k]) offset = mapLen - 1 - offset;
+            return mapStart + offset;
         }
     }
     return 0;
